@@ -1,0 +1,219 @@
+name: Interact with signed-in HeyClicky
+
+# Signs the app in (token callback, same as signin.yml), waits for the
+# post-sign-in survey, then posts a synthetic mouse click at a given coordinate
+# with cliclick (which uses CGEventPost and does not need Accessibility to POST
+# events), and screenshots the result. Coordinates are in the 1024x768 capture
+# space. Manual trigger.
+
+on:
+  workflow_dispatch:
+    inputs:
+      clicks:
+        description: "Semicolon-separated x,y clicks in 1024x768 space, applied in order"
+        default: "517,486;483,421"
+      dmg_url:
+        description: "Direct .dmg URL (blank = Sparkle appcast)"
+        required: false
+        default: ""
+
+jobs:
+  interact:
+    runs-on: macos-latest
+    steps:
+      - name: Environment
+        run: |
+          sw_vers; uname -m
+
+      - name: Install cliclick
+        run: brew install --quiet cliclick || brew install cliclick || true
+
+      - name: Fetch the app
+        run: |
+          set -euo pipefail
+          URL="${{ github.event.inputs.dmg_url }}"
+          if [ -z "$URL" ]; then
+            curl -fsSL https://farzaa.github.io/clicky-releases/appcast.xml -o appcast.xml
+            URL=$(grep -oE 'url="https://[^"]+\.dmg"' appcast.xml | head -1 | sed 's/url="//; s/"$//')
+          fi
+          curl -fL "$URL" -o HeyClicky.dmg
+          MP=$(mktemp -d); hdiutil attach HeyClicky.dmg -nobrowse -mountpoint "$MP"
+          cp -R "$(find "$MP" -maxdepth 1 -name '*.app' | head -1)" "$HOME/HeyClicky.app"
+          hdiutil detach "$MP" || true
+          xattr -dr com.apple.quarantine "$HOME/HeyClicky.app" || true
+
+      - name: Launch, sign in, drive to Allow, observe
+        env:
+          AT: ${{ secrets.CLICKY_ACCESS_TOKEN }}
+          RT: ${{ secrets.CLICKY_REFRESH_TOKEN }}
+        run: |
+          set -x
+          [ -n "$AT" ] && [ -n "$RT" ] || { echo "Missing token secrets"; exit 1; }
+          mkdir -p evidence/shots
+          # Vision helper (Swift, so no pip — macOS runners use an externally
+          # managed Python that rejects pip installs). The onboarding card renders
+          # at a different position on every launch, so fixed coords miss. We
+          # locate the target in a fresh screenshot each time. "blue" finds the
+          # accent-blue dot or button (the only saturated blue on a black screen,
+          # dock/menubar excluded); "allow" finds the light macOS TCC dialog and
+          # returns its bottom-right button. Output is X,Y in 1024x768 space.
+          cat > /tmp/find_target.swift <<'SW'
+          import AppKit
+          import Foundation
+          let a = CommandLine.arguments
+          guard a.count >= 3, let img = NSImage(contentsOfFile: a[1]) else { print("NONE"); exit(0) }
+          let mode = a[2]
+          var pr = NSRect(x: 0, y: 0, width: img.size.width, height: img.size.height)
+          guard let cg = img.cgImage(forProposedRect: &pr, context: nil, hints: nil) else { print("NONE"); exit(0) }
+          let rep = NSBitmapImageRep(cgImage: cg)
+          let W = rep.pixelsWide, H = rep.pixelsHigh
+          guard let data = rep.bitmapData else { print("NONE"); exit(0) }
+          let spp = rep.samplesPerPixel, bpr = rep.bytesPerRow
+          let sx = 1024.0 / Double(W), sy = 768.0 / Double(H)
+          var xs = [Int](); var ys = [Int]()
+          func rgb(_ x: Int, _ y: Int) -> (Int, Int, Int) {
+            let o = y * bpr + x * spp
+            return (Int(data[o]), Int(data[o + 1]), Int(data[o + 2]))
+          }
+          let y0 = Int(Double(H) * 0.05)
+          let y1 = Int(Double(H) * (mode == "blue" ? 0.88 : 0.85))
+          var y = y0
+          while y < y1 {
+            var x = 0
+            while x < W {
+              let (r, g, b) = rgb(x, y)
+              let hit = mode == "blue" ? (b > 140 && b > r + 50 && b > g + 30 && r < 120)
+                                       : (r > 205 && g > 205 && b > 205)
+              if hit { xs.append(x); ys.append(y) }
+              x += 2
+            }
+            y += 2
+          }
+          let minCount = mode == "blue" ? 25 : 800
+          if xs.count < minCount { print("NONE"); exit(0) }
+          var cx = 0.0, cy = 0.0
+          if mode == "blue" {
+            // The card can show a blue play-triangle above the blue button; a
+            // naive centroid lands in the gap and hits nothing. Keep only the
+            // bottom-most blue band so we target the actionable button/dot.
+            let band = Int(Double(H) * 0.05)
+            let ymax = ys.max() ?? 0
+            var bx = [Int](); var by = [Int]()
+            for i in 0..<ys.count where ys[i] >= ymax - band { bx.append(xs[i]); by.append(ys[i]) }
+            cx = Double(bx.reduce(0, +)) / Double(bx.count)
+            cy = Double(by.reduce(0, +)) / Double(by.count)
+          } else {
+            let sxs = xs.sorted(), sys2 = ys.sorted()
+            func pct(_ arr: [Int], _ p: Double) -> Double { Double(arr[Int(Double(arr.count) * p)]) }
+            let xlo = pct(sxs, 0.05), xhi = pct(sxs, 0.95)
+            let ylo = pct(sys2, 0.05), yhi = pct(sys2, 0.95)
+            cx = xlo + 0.73 * (xhi - xlo)   // Allow sits right-of-center
+            cy = ylo + 0.86 * (yhi - ylo)   // ...near the dialog bottom
+          }
+          print("\(Int((cx * sx).rounded())),\(Int((cy * sy).rounded()))")
+          SW
+          # ---- Pre-grant Accessibility with a real csreq, before launch ------
+          # A bare TCC row (csreq NULL) is inert: tccd verifies the requesting
+          # app's signature against the stored csreq blob, so a signed app is not
+          # trusted without it. Compute HeyClicky's designated requirement, turn
+          # it into the binary csreq blob, and inject the Accessibility row WITH
+          # that blob before first launch so AXIsProcessTrusted reads true when
+          # the app checks it. (User approved this TCC write on a throwaway VM.)
+          BID=com.humansongs.clicky
+          SYS="/Library/Application Support/com.apple.TCC/TCC.db"
+          : > evidence/tcc_write.log
+          REQ=$(codesign -d -r- "$HOME/HeyClicky.app" 2>&1 | sed -n 's/^designated => //p')
+          echo "designated requirement: $REQ" | tee -a evidence/tcc_write.log
+          CSHEX=""
+          if [ -n "$REQ" ]; then
+            printf '%s' "$REQ" | csreq -r- -b /tmp/req.csreq 2>>evidence/tcc_write.log \
+              && CSHEX=$(xxd -p /tmp/req.csreq | tr -d '\n')
+          fi
+          echo "csreq blob hex length: ${#CSHEX}" | tee -a evidence/tcc_write.log
+          if [ -n "$CSHEX" ]; then
+            # Accessibility is needed just to reach the Screen Recording screen
+            # (each runner starts with an empty TCC.db); ScreenCapture is the one
+            # we're actually testing — grant it before launch so the app reads it
+            # at startup (Screen Recording is otherwise cached until relaunch).
+            for SVC in kTCCServiceAccessibility kTCCServiceScreenCapture; do
+              sudo sqlite3 "$SYS" \
+                "INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,flags) VALUES ('$SVC','$BID',0,2,4,1,X'$CSHEX',0);" \
+                >>evidence/tcc_write.log 2>&1 && echo "$SVC INSERT OK (with csreq)" | tee -a evidence/tcc_write.log \
+                || echo "$SVC INSERT FAILED" | tee -a evidence/tcc_write.log
+            done
+          else
+            echo "no csreq blob; skipping csreq-based insert" | tee -a evidence/tcc_write.log
+          fi
+          sudo sqlite3 "$SYS" "SELECT service,client,auth_value,length(csreq) FROM access WHERE client='$BID';" | tee -a evidence/tcc_write.log
+          sudo killall tccd 2>/dev/null || true
+          sleep 3
+          open "$HOME/HeyClicky.app"
+          sleep 18
+          { set +x; } 2>/dev/null
+          open "clicky://auth-callback#access_token=${AT}&refresh_token=${RT}&expires_in=3600&token_type=bearer"
+          set -x
+          sleep 22
+          screencapture -x evidence/shots/00-start.png 2>/dev/null || true
+          # Step plan. Survey "Claude" has no blue element and renders in a stable
+          # spot, so it stays a fixed click; every later target is located by
+          # vision: blue color dot -> greeting button -> Let's start -> Grant
+          # Microphone -> Allow.
+          # ...allow = mic prompt. Accessibility + Screen Recording are
+          # pre-granted (csreq), so the app auto-skips those; the trailing blue
+          # click presses "Grant Access" on the final "Complete screen access"
+          # sub-step to finish onboarding and reach home.
+          STEPS="fixed:517,486 blue blue blue blue allow blue"
+          n=0
+          for step in $STEPS; do
+            n=$((n+1))
+            if [ "${step%%:*}" = "fixed" ]; then
+              XY="${step#fixed:}"
+            else
+              # The card slides into place, so a detect-then-click races the
+              # animation and lands on stale coords. Require two detections 2s
+              # apart to AGREE (card stationary) before accepting the target.
+              XY=NONE
+              for try in 1 2 3 4 5 6; do
+                sleep 4
+                screencapture -x /tmp/a.png 2>/dev/null || true
+                A=$(swift /tmp/find_target.swift /tmp/a.png "$step" 2>/dev/null || echo NONE)
+                sleep 2
+                screencapture -x /tmp/b.png 2>/dev/null || true
+                B=$(swift /tmp/find_target.swift /tmp/b.png "$step" 2>/dev/null || echo NONE)
+                if [ "$A" = "$B" ] && [ "$A" != "NONE" ] && [ -n "$A" ]; then XY="$A"; break; fi
+              done
+            fi
+            echo "step $n mode=$step -> $XY"
+            if [ "$XY" = "NONE" ] || [ -z "$XY" ]; then
+              echo "no target found for step $n ($step)"
+              screencapture -x "evidence/shots/step-${n}-notarget.png" 2>/dev/null || true
+              continue
+            fi
+            X="${XY%,*}"; Y="${XY#*,}"
+            cliclick c:${X},${Y} || echo "cliclick failed"
+            sleep 7
+            screencapture -x "evidence/shots/step-${n}.png" 2>/dev/null || true
+          done
+          # After the mic Allow the app checks Accessibility. Because we
+          # pre-granted it (with csreq) before launch, a working grant means the
+          # app skips the Accessibility screen and lands on Screen Recording
+          # (permission 3 of 3) on its own. Observe which screen we end on.
+          echo "--- tcc_write.log ---"; cat evidence/tcc_write.log
+          for i in $(seq -w 1 8); do
+            screencapture -x "evidence/shots/final-${i}.png" 2>/dev/null || true
+            sleep 5
+          done
+
+      - name: Logs
+        if: always()
+        run: |
+          log show --predicate 'subsystem == "com.humansongs.clicky"' --last 6m --info --debug > evidence/oslog.txt 2>&1 || true
+          pkill -f HeyClicky.app || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interact-evidence
+          path: evidence/**
+          if-no-files-found: warn
