@@ -158,14 +158,12 @@ jobs:
           # spot, so it stays a fixed click; every later target is located by
           # vision: blue color dot -> greeting button -> Let's start -> Grant
           # Microphone -> Allow.
-          # A newer build adds a "Pick the style you like" screen (two cards +
-          # Continue) right after the survey. Plan, in order: survey Claude
-          # (fixed), pick the left style card (fixed), Continue (blue, enabled
-          # once a card is chosen), color dot, Give me a home, Let's start, Grant
-          # Microphone, Allow (mic dialog). Accessibility + Screen Recording are
-          # pre-granted (csreq) so the app auto-skips them; the final blue click
-          # presses "Grant Access" on "Complete screen access" to reach home.
-          STEPS="fixed:517,486 fixed:410,370 blue blue blue blue blue allow blue"
+          # Pinned to v1.0.48 (no "Pick the style" screen). Plan: survey Claude
+          # (fixed), color dot, Give me a home, Let's start, Grant Microphone,
+          # Allow (mic dialog). Accessibility + Screen Recording are pre-granted
+          # (csreq) so the app auto-skips them; the final blue click presses
+          # "Grant Access" on "Complete screen access" to reach home.
+          STEPS="fixed:517,486 blue blue blue blue allow blue"
           n=0
           for step in $STEPS; do
             n=$((n+1))
