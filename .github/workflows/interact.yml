@@ -162,8 +162,10 @@ jobs:
           # (fixed), color dot, Give me a home, Let's start, Grant Microphone,
           # Allow (mic dialog). Accessibility + Screen Recording are pre-granted
           # (csreq) so the app auto-skips them; the final blue click presses
-          # "Grant Access" on "Complete screen access" to reach home.
-          STEPS="fixed:517,486 blue blue blue blue allow blue"
+          # "Grant Access" on "Complete screen access", which fires a final macOS
+          # dialog ("bypass the private window picker") with a blue Allow button;
+          # the last blue click presses that Allow to finish and reach home.
+          STEPS="fixed:517,486 blue blue blue blue allow blue blue"
           n=0
           for step in $STEPS; do
             n=$((n+1))
