@@ -164,8 +164,9 @@ jobs:
           # (csreq) so the app auto-skips them; the final blue click presses
           # "Grant Access" on "Complete screen access", which fires a final macOS
           # dialog ("bypass the private window picker") with a blue Allow button;
-          # the last blue click presses that Allow to finish and reach home.
-          STEPS="fixed:517,486 blue blue blue blue allow blue blue"
+          # the last two blue clicks press that Allow, then "Meet HeyClicky" on
+          # the "All set" screen to leave onboarding and reach the live app.
+          STEPS="fixed:517,486 blue blue blue blue allow blue blue blue"
           n=0
           for step in $STEPS; do
             n=$((n+1))
