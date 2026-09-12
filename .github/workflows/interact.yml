@@ -203,6 +203,28 @@ jobs:
           # app skips the Accessibility screen and lands on Screen Recording
           # (permission 3 of 3) on its own. Observe which screen we end on.
           echo "--- tcc_write.log ---"; cat evidence/tcc_write.log
+          # "Meet HeyClicky" started the welcome tutorial video (~2 min). Let it
+          # play out, screenshot the end frame (where a CTA appears), then find
+          # and click that CTA (blue button) with a stationary check, and capture
+          # the resulting screen.
+          echo "waiting out the tutorial..."
+          sleep 140
+          screencapture -x evidence/shots/tutorial-end.png 2>/dev/null || true
+          XY=NONE
+          for try in 1 2 3 4 5 6 7 8; do
+            sleep 3
+            screencapture -x /tmp/a.png 2>/dev/null || true
+            A=$(swift /tmp/find_target.swift /tmp/a.png blue 2>/dev/null || echo NONE)
+            sleep 2
+            screencapture -x /tmp/b.png 2>/dev/null || true
+            B=$(swift /tmp/find_target.swift /tmp/b.png blue 2>/dev/null || echo NONE)
+            if [ "$A" = "$B" ] && [ "$A" != "NONE" ] && [ -n "$A" ]; then XY="$A"; break; fi
+          done
+          echo "tutorial CTA -> $XY"
+          if [ "$XY" != "NONE" ] && [ -n "$XY" ]; then
+            cliclick c:${XY%,*},${XY#*,} || echo "cliclick failed"
+          fi
+          # Capture the resulting screen for ~40s.
           for i in $(seq -w 1 8); do
             screencapture -x "evidence/shots/final-${i}.png" 2>/dev/null || true
             sleep 5
