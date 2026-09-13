@@ -20,6 +20,7 @@ on:
 jobs:
   interact:
     runs-on: macos-latest
+    timeout-minutes: 22   # hard cap so a wedged step can never hang for hours
     steps:
       - name: Environment
         run: |
@@ -31,6 +32,7 @@ jobs:
       - name: Install BlackHole + synthesize a mic clip
         run: |
           set -x
+          brew install --quiet coreutils || brew install coreutils || true   # gtimeout
           brew install --quiet switchaudio-osx || brew install switchaudio-osx || true
           brew install --quiet blackhole-2ch || brew install --cask blackhole-2ch || true
           sudo killall coreaudiod 2>/dev/null || true
@@ -248,9 +250,19 @@ jobs:
           # disabled until the app HEARS audio. Loop the spoken clip into BlackHole
           # (the app's input) in the background so the level bars react, then click
           # the enabled blue Continue/Next through the ~7 demo steps. Record it all.
-          ( for r in $(seq 1 40); do SwitchAudioSource -t output -s "BlackHole 2ch" >/dev/null 2>&1; afplay "$HOME/clip.aiff" 2>/dev/null; sleep 1; done ) &
+          # Each afplay is wrapped in `timeout` so a wedged BlackHole/coreaudiod
+          # can never block a play forever (that plus the recorder below is what
+          # hung the previous run for 42 min).
+          # gtimeout (coreutils) since macOS has no GNU `timeout`; fall back to a
+          # no-op wrapper if it is somehow missing (the job timeout-minutes is the
+          # ultimate backstop either way).
+          TO=$(command -v gtimeout || command -v timeout || true)
+          run_to() { if [ -n "$TO" ]; then "$TO" "$@"; else shift; "$@"; fi; }
+          ( for r in $(seq 1 30); do SwitchAudioSource -t output -s "BlackHole 2ch" >/dev/null 2>&1; run_to 8 afplay "$HOME/clip.aiff" 2>/dev/null; sleep 1; done ) &
           AUD=$!
-          ( screencapture -V 150 -x evidence/walkthrough.mov 2>evidence/rec_err.log ) &
+          # The recorder is what hung: screencapture -V never exited on the wedged
+          # audio device. Cap it hard so `wait` below can never block.
+          ( run_to 130 screencapture -V 120 -x evidence/walkthrough.mov 2>evidence/rec_err.log || true ) &
           VID=$!
           # Advance the demo: each iteration finds the bottom-most blue button
           # (Continue/Next when enabled) with a stationary check and clicks it.
