@@ -261,9 +261,10 @@ jobs:
           echo "selecting BlackHole 2ch in the app mic dropdown..."
           cliclick c:511,519 || true      # open the device dropdown
           sleep 1
-          cliclick t:BlackHole || true     # type-select the BlackHole item
-          sleep 1
-          cliclick kp:return || true       # confirm
+          screencapture -x evidence/shots/dropdown-open.png 2>/dev/null || true
+          # Menu opens below the pill: System Default / Apple Virtual / BlackHole
+          # 2ch / Null. BlackHole is the 3rd item at ~y=608.
+          cliclick c:500,608 || true       # click "BlackHole 2ch"
           sleep 1
           screencapture -x evidence/shots/after-device.png 2>/dev/null || true
           TO=$(command -v gtimeout || command -v timeout || true)
