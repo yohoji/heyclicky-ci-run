@@ -282,20 +282,13 @@ jobs:
           # Gmail button behind), so the detector targets it correctly; if audio
           # never lands, Continue stays grey and this will stall on the browser —
           # the screenshots will show which happened.
+          # The enabled Continue/Next is WHITE (not blue), so blue detection misses
+          # it and hits the little blue play-triangle. Click Continue by its fixed
+          # position (bottom-center of the demo modal) instead, each step.
           for d in $(seq -w 1 10); do
-            XY=NONE
-            for try in 1 2 3 4; do
-              sleep 3
-              screencapture -x /tmp/a.png 2>/dev/null || true
-              A=$(swift /tmp/find_target.swift /tmp/a.png blue 2>/dev/null || echo NONE)
-              sleep 2
-              screencapture -x /tmp/b.png 2>/dev/null || true
-              B=$(swift /tmp/find_target.swift /tmp/b.png blue 2>/dev/null || echo NONE)
-              [ "$A" = "$B" ] && [ "$A" != "NONE" ] && [ -n "$A" ] && { XY="$A"; break; }
-            done
-            echo "demo step $d -> $XY"
             screencapture -x "evidence/shots/demo-${d}.png" 2>/dev/null || true
-            [ "$XY" != "NONE" ] && [ -n "$XY" ] && { cliclick c:${XY%,*},${XY#*,} || true; }
+            echo "demo step $d: clicking Continue (511,611)"
+            cliclick c:511,611 || true
             sleep 6
           done
           wait "$VID" 2>/dev/null || true
