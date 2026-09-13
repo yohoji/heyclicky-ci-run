@@ -165,6 +165,17 @@ jobs:
           sudo sqlite3 "$SYS" "SELECT service,client,auth_value,length(csreq) FROM access WHERE client='$BID';" | tee -a evidence/tcc_write.log
           sudo killall tccd 2>/dev/null || true
           sleep 3
+          # ---- FULL-RUN screen recording -----------------------------------
+          # Record the ENTIRE run (auth, onboarding, tutorial, demo) as one
+          # continuous video so we can watch exactly where/why anything goes
+          # wrong. screencapture -V must be stopped with SIGINT to finalize a
+          # valid file, so we signal it at the end; a background sleep is the
+          # safety cap (plus the job timeout-minutes).
+          TO=$(command -v gtimeout || command -v timeout || true)
+          run_to() { if [ -n "$TO" ]; then "$TO" "$@"; else shift; "$@"; fi; }
+          screencapture -V 700 -x evidence/fullrun.mov 2>evidence/rec_err.log &
+          FULLVID=$!
+          ( sleep 720; kill -INT "$FULLVID" 2>/dev/null || true ) &
           open "$HOME/HeyClicky.app"
           sleep 18
           { set +x; } 2>/dev/null
@@ -267,33 +278,24 @@ jobs:
           cliclick c:500,608 || true       # click "BlackHole 2ch"
           sleep 1
           screencapture -x evidence/shots/after-device.png 2>/dev/null || true
-          TO=$(command -v gtimeout || command -v timeout || true)
-          run_to() { if [ -n "$TO" ]; then "$TO" "$@"; else shift; "$@"; fi; }
           # Feed the spoken clip into BlackHole on a loop so the mic meter reacts
           # and the (otherwise disabled) Continue button enables. Each play is
-          # time-capped so a wedged device can never block.
+          # time-capped so a wedged device can never block. (run_to defined above.)
           ( for r in $(seq 1 45); do SwitchAudioSource -t output -s "BlackHole 2ch" >/dev/null 2>&1; run_to 8 afplay "$HOME/clip.aiff" 2>/dev/null; sleep 1; done ) &
           AUD=$!
-          # Record the demo, hard-capped so it can never hang.
-          ( run_to 150 screencapture -V 140 -x evidence/walkthrough.mov 2>evidence/rec_err.log || true ) &
-          VID=$!
-          # Click the enabled blue Continue/Next through the demo steps. When
-          # Continue is enabled it is the bottom-most blue element (lower than the
-          # Gmail button behind), so the detector targets it correctly; if audio
-          # never lands, Continue stays grey and this will stall on the browser —
-          # the screenshots will show which happened.
-          # The enabled Continue/Next is WHITE (not blue), so blue detection misses
-          # it and hits the little blue play-triangle. Click Continue by its fixed
-          # position (bottom-center of the demo modal) instead, each step.
+          # The enabled Continue/Next is WHITE (not blue). Click it at its fixed
+          # bottom-center position each demo step.
           for d in $(seq -w 1 10); do
             screencapture -x "evidence/shots/demo-${d}.png" 2>/dev/null || true
             echo "demo step $d: clicking Continue (511,611)"
             cliclick c:511,611 || true
             sleep 6
           done
-          wait "$VID" 2>/dev/null || true
           kill "$AUD" 2>/dev/null || true
-          ls -la evidence/walkthrough.mov 2>/dev/null || true
+          # Stop the full-run recorder with SIGINT so the .mov is finalized.
+          kill -INT "$FULLVID" 2>/dev/null || true
+          wait "$FULLVID" 2>/dev/null || true
+          ls -la evidence/fullrun.mov 2>/dev/null || true
 
       - name: Logs
         if: always()
