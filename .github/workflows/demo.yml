@@ -319,7 +319,14 @@ jobs:
           # background so the mic meter is ALWAYS reacting — discrete per-step
           # plays didn't keep the meter alive, so Continue never enabled. Push-to-
           # talk steps just hold the hotkey while this audio is already playing.
-          ( while :; do SwitchAudioSource -t output -s "BlackHole 2ch" >/dev/null 2>&1; run_to 8 afplay "$HOME/clip.aiff" 2>/dev/null || true; done ) &
+          # Continuously force BOTH default input AND output to BlackHole: the app
+          # listens on its "System Default" input, so keeping the default input as
+          # BlackHole (not the flaky in-app dropdown) is what makes it hear us.
+          ( while :; do
+              SwitchAudioSource -t input  -s "BlackHole 2ch" >/dev/null 2>&1
+              SwitchAudioSource -t output -s "BlackHole 2ch" >/dev/null 2>&1
+              run_to 8 afplay "$HOME/clip.aiff" 2>/dev/null || true
+            done ) &
           AUD=$!
           # Hold Ctrl+Option for a few seconds (the background audio is the speech).
           speak_held() { cliclick kd:ctrl,alt || true; sleep 6; cliclick ku:ctrl,alt || true; }
