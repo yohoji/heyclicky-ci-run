@@ -20,7 +20,7 @@ on:
 jobs:
   interact:
     runs-on: macos-latest
-    timeout-minutes: 22   # hard cap so a wedged step can never hang for hours
+    timeout-minutes: 30   # hard cap so a wedged step can never hang for hours
     steps:
       - name: Environment
         run: |
@@ -191,9 +191,11 @@ jobs:
           # Google" button, the app opens browser OAuth, and onboarding derails.
           # Poll the app's own log for the authenticated marker before proceeding.
           echo "waiting for authentication to take effect before clicking..."
+          # Cheap, bounded gate: 'log show --last 40s' (no --info) is fast; cap at
+          # ~90s so a failed auth can't eat the job budget and get us cancelled.
           AUTHED=0
-          for i in $(seq 1 40); do
-            if log show --predicate 'subsystem == "com.humansongs.clicky"' --last 120s --info 2>/dev/null | grep -q "Authenticated as"; then
+          for i in $(seq 1 30); do
+            if log show --predicate 'subsystem == "com.humansongs.clicky"' --last 40s 2>/dev/null | grep -q "Authenticated as"; then
               echo "auth confirmed after ~$((i*3))s"; AUTHED=1; break
             fi
             sleep 3
