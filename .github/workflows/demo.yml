@@ -134,6 +134,8 @@ jobs:
           func dialogTarget(_ minC: Int) -> String? {
             guard lx.count >= minC, let (xlo, xhi, ylo, yhi, wf, hf) = lightBox() else { return nil }
             if wf > 0.45 || hf > 0.60 { return nil }   // too big to be a dialog (browser)
+            let cxf = (xlo + xhi) / 2.0 / Double(W)
+            if cxf < 0.35 || cxf > 0.65 { return nil } // off-centre => a macOS notification banner, not a TCC prompt
             return fmt(xlo + 0.73 * (xhi - xlo), ylo + 0.86 * (yhi - ylo))   // Allow: right-of-centre, near bottom
           }
           switch mode {
@@ -256,9 +258,12 @@ jobs:
                 fi ;;
             esac
             screencapture -x "evidence/shots/onboard-$(printf %02d "$i").png" 2>/dev/null || true
-            # Onboarding is complete when Safari opened (tutorial), or the card is
-            # gone for a couple of iterations after we've advanced.
-            if [ "$done_onboard" = 1 ] || { [ "$advanced" -ge 6 ] && [ "$noneStreak" -ge 3 ]; }; then
+            # Onboarding is complete once we've advanced through all ~8 screens
+            # (survey, color, greeting, Let's start, Grant Mic, mic Allow, Grant
+            # Access, bypass Allow, Meet HeyClicky), or Safari opened, or the card
+            # is gone for a couple of iterations. Stopping at advanced>=8 keeps the
+            # loop from ever touching the tutorial video / notification banners.
+            if [ "$done_onboard" = 1 ] || [ "$advanced" -ge 8 ] || { [ "$advanced" -ge 6 ] && [ "$noneStreak" -ge 3 ]; }; then
               echo "onboarding complete after $i iters (advanced=$advanced, mode=$MODE)"; break
             fi
             sleep 4
