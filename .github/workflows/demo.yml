@@ -254,6 +254,18 @@ jobs:
           cliclick c:511,75 || echo "cliclick failed"
           sleep 5
           screencapture -x evidence/shots/after-showme.png 2>/dev/null || true
+          # The app's mic dropdown defaults to "Apple Virtual Sound Device" (it
+          # does NOT follow the system default), which never receives our clip.
+          # Switch it to BlackHole 2ch via the dropdown + type-select so the app
+          # listens on the device the clip plays into.
+          echo "selecting BlackHole 2ch in the app mic dropdown..."
+          cliclick c:511,519 || true      # open the device dropdown
+          sleep 1
+          cliclick t:BlackHole || true     # type-select the BlackHole item
+          sleep 1
+          cliclick kp:return || true       # confirm
+          sleep 1
+          screencapture -x evidence/shots/after-device.png 2>/dev/null || true
           TO=$(command -v gtimeout || command -v timeout || true)
           run_to() { if [ -n "$TO" ]; then "$TO" "$@"; else shift; "$@"; fi; }
           # Feed the spoken clip into BlackHole on a loop so the mic meter reacts
