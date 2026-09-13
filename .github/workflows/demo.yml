@@ -33,6 +33,7 @@ jobs:
         run: |
           set -x
           brew install --quiet coreutils || brew install coreutils || true          # gtimeout
+          brew install --quiet ffmpeg || brew install ffmpeg || true                 # stitch frames
           brew install --quiet switchaudio-osx || brew install switchaudio-osx || true
           brew install --quiet blackhole-2ch || brew install --cask blackhole-2ch || true
           # Register the new HAL device with a single coreaudiod restart NOW, well
@@ -170,17 +171,15 @@ jobs:
           sudo sqlite3 "$SYS" "SELECT service,client,auth_value,length(csreq) FROM access WHERE client='$BID';" | tee -a evidence/tcc_write.log
           sudo killall tccd 2>/dev/null || true
           sleep 3
-          # ---- FULL-RUN screen recording -----------------------------------
-          # Record the ENTIRE run (auth, onboarding, tutorial, demo) as one
-          # continuous video so we can watch exactly where/why anything goes
-          # wrong. screencapture -V must be stopped with SIGINT to finalize a
-          # valid file, so we signal it at the end; a background sleep is the
-          # safety cap (plus the job timeout-minutes).
+          # ---- FULL-RUN screen recording (frame burst) ---------------------
+          # Record the ENTIRE run by bursting screenshots (screencapture -x can
+          # never wedge, unlike screencapture -V which hung on the audio device).
+          # Stitched into an mp4 with ffmpeg at the end.
           TO=$(command -v gtimeout || command -v timeout || true)
           run_to() { if [ -n "$TO" ]; then "$TO" "$@"; else shift; "$@"; fi; }
-          screencapture -V 700 -x evidence/fullrun.mov 2>evidence/rec_err.log &
+          mkdir -p /tmp/frames
+          ( fi=0; while :; do fi=$((fi+1)); screencapture -x "$(printf /tmp/frames/f_%05d.png "$fi")" 2>/dev/null; sleep 1; done ) &
           FULLVID=$!
-          ( sleep 720; kill -INT "$FULLVID" 2>/dev/null || true ) &
           open "$HOME/HeyClicky.app"
           sleep 18
           { set +x; } 2>/dev/null
@@ -353,10 +352,16 @@ jobs:
             cliclick c:511,611 || true
             sleep 5
           done
-          # Stop the full-run recorder with SIGINT so the .mov is finalized.
-          kill -INT "$FULLVID" 2>/dev/null || true
-          wait "$FULLVID" 2>/dev/null || true
-          ls -la evidence/fullrun.mov 2>/dev/null || true
+          # Stop the frame-burst recorder (a plain kill is safe — no wedge) and
+          # stitch the frames into an mp4. framerate 3 keeps it watchable.
+          kill "$FULLVID" 2>/dev/null || true
+          sleep 1
+          NF=$(ls /tmp/frames/f_*.png 2>/dev/null | wc -l | tr -d ' ')
+          echo "captured $NF frames"
+          run_to 180 ffmpeg -y -framerate 3 -pattern_type glob -i '/tmp/frames/f_*.png' \
+            -c:v libx264 -pix_fmt yuv420p -vf scale=1024:-2 -movflags +faststart \
+            evidence/fullrun.mp4 2>evidence/ffmpeg.log || echo "ffmpeg stitch failed"
+          ls -la evidence/fullrun.mp4 2>/dev/null || true
 
       - name: Logs
         if: always()
