@@ -203,28 +203,21 @@ jobs:
           # app skips the Accessibility screen and lands on Screen Recording
           # (permission 3 of 3) on its own. Observe which screen we end on.
           echo "--- tcc_write.log ---"; cat evidence/tcc_write.log
-          # ---- Record the welcome tutorial --------------------------------
-          # "Meet HeyClicky" started the tutorial video. Record ~130s two ways:
-          # native screencapture -V (smooth 30fps) and, in parallel, a screenshot
-          # burst stitched with ffmpeg as a reliable fallback. Whichever yields a
-          # good file is the deliverable.
-          DUR=130
-          mkdir -p /tmp/frames
-          ( screencapture -V "$DUR" -x evidence/tutorial_native.mov 2>evidence/rec_err.log ) &
-          NAT=$!
-          END=$(( $(date +%s) + DUR ))
-          i=0
-          while [ "$(date +%s)" -lt "$END" ]; do
-            i=$((i+1)); printf -v n '%05d' "$i"
-            screencapture -x "/tmp/frames/f_$n.png" 2>/dev/null || true
-          done
-          wait "$NAT" 2>/dev/null || true
-          FPS=$(awk "BEGIN{f=$i/$DUR; if(f<1)f=1; printf \"%.2f\", f}")
-          echo "captured $i frames over ${DUR}s -> fps=$FPS"
-          ffmpeg -y -framerate "$FPS" -pattern_type glob -i '/tmp/frames/f_*.png' \
-            -c:v libx264 -pix_fmt yuv420p -movflags +faststart evidence/tutorial_frames.mp4 \
-            2>evidence/ffmpeg.log || echo "ffmpeg failed"
-          ls -la evidence/tutorial_native.mov evidence/tutorial_frames.mp4 2>/dev/null || true
+          # ---- Let intro play, click the notch "Show me" CTA, record walkthrough
+          # After "Meet HeyClicky" the app plays its intro and even drives Safari
+          # to Gmail on its own. The real CTA is "Show me" up in the NOTCH (top-
+          # center), not the bottom-most blue element, so click it by fixed coord.
+          echo "letting the intro play out..."
+          sleep 140
+          screencapture -x evidence/shots/tutorial-end.png 2>/dev/null || true
+          echo "clicking notch 'Show me' CTA"
+          cliclick c:511,75 || echo "cliclick failed"
+          sleep 3
+          screencapture -x evidence/shots/after-showme.png 2>/dev/null || true
+          # Record the guided walkthrough that follows.
+          DUR=120
+          screencapture -V "$DUR" -x evidence/walkthrough.mov 2>evidence/rec_err.log || echo "video capture failed"
+          ls -la evidence/walkthrough.mov 2>/dev/null || true
 
       - name: Logs
         if: always()
