@@ -122,18 +122,28 @@ jobs:
             for i in 0..<by.count where by[i] >= ymax - band { cbx.append(bx[i]); cby.append(by[i]) }
             return fmt(Double(cbx.reduce(0, +)) / Double(cbx.count), Double(cby.reduce(0, +)) / Double(cby.count))
           }
-          func dialogTarget(_ minC: Int) -> String? {
-            if lx.count < minC { return nil }
+          // Light-region bbox (as fractions of the screen). Used to tell a small
+          // centred TCC dialog from a big browser page (Safari during the tutorial).
+          func lightBox() -> (Double, Double, Double, Double, Double, Double)? {
+            if lx.count < 800 { return nil }
             let sxs = lx.sorted(), sys2 = ly.sorted()
             func pct(_ arr: [Int], _ p: Double) -> Double { Double(arr[Int(Double(arr.count) * p)]) }
             let xlo = pct(sxs, 0.05), xhi = pct(sxs, 0.95), ylo = pct(sys2, 0.05), yhi = pct(sys2, 0.95)
+            return (xlo, xhi, ylo, yhi, (xhi - xlo) / Double(W), (yhi - ylo) / Double(H))
+          }
+          func dialogTarget(_ minC: Int) -> String? {
+            guard lx.count >= minC, let (xlo, xhi, ylo, yhi, wf, hf) = lightBox() else { return nil }
+            if wf > 0.45 || hf > 0.60 { return nil }   // too big to be a dialog (browser)
             return fmt(xlo + 0.73 * (xhi - xlo), ylo + 0.86 * (yhi - ylo))   // Allow: right-of-centre, near bottom
           }
           switch mode {
           case "blue":  print(blueTarget() ?? "NONE")
           case "allow": print(dialogTarget(800) ?? "NONE")
           default:      // "classify": what is on screen + where to click
-            if let d = dialogTarget(1500) { print("dialog \(d)") }
+            // A big light region = Safari/browser page => the tutorial has started
+            // => onboarding is done. Report it so the driver stops onboarding.
+            if let (_, _, _, _, wf, hf) = lightBox(), wf > 0.45 || hf > 0.60 { print("browser") }
+            else if let d = dialogTarget(1500) { print("dialog \(d)") }
             else if let b = blueTarget()  { print("blue \(b)") }
             else { print("none") }
           }
@@ -224,7 +234,12 @@ jobs:
             R=$(swift /tmp/find_target.swift /tmp/cur.png classify 2>/dev/null || echo none)
             MODE="${R%% *}"; XY="${R#* }"
             echo "onboard iter $i: $R"
+            done_onboard=0
             case "$MODE" in
+              browser)
+                # Safari is open => the intro tutorial has started => onboarding
+                # is finished. (Only trust this once we've actually advanced.)
+                [ "$advanced" -ge 5 ] && done_onboard=1 ;;
               dialog)
                 cliclick c:${XY%,*},${XY#*,} || true
                 advanced=$((advanced+1)); noneStreak=0 ;;
@@ -241,10 +256,10 @@ jobs:
                 fi ;;
             esac
             screencapture -x "evidence/shots/onboard-$(printf %02d "$i").png" 2>/dev/null || true
-            # Onboarding is complete once we have advanced through the screens and
-            # the actionable card is gone for a couple of iterations (tutorial).
-            if [ "$advanced" -ge 6 ] && [ "$noneStreak" -ge 3 ]; then
-              echo "onboarding complete after $i iters (advanced=$advanced)"; break
+            # Onboarding is complete when Safari opened (tutorial), or the card is
+            # gone for a couple of iterations after we've advanced.
+            if [ "$done_onboard" = 1 ] || { [ "$advanced" -ge 6 ] && [ "$noneStreak" -ge 3 ]; }; then
+              echo "onboarding complete after $i iters (advanced=$advanced, mode=$MODE)"; break
             fi
             sleep 4
           done
