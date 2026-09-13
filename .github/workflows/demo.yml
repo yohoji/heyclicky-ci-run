@@ -169,7 +169,20 @@ jobs:
           { set +x; } 2>/dev/null
           open "clicky://auth-callback#access_token=${AT}&refresh_token=${RT}&expires_in=3600&token_type=bearer"
           set -x
-          sleep 22
+          # AUTH GATE: do not click until the injected session has actually signed
+          # the app in. Otherwise the first clicks land on the "Sign in with
+          # Google" button, the app opens browser OAuth, and onboarding derails.
+          # Poll the app's own log for the authenticated marker before proceeding.
+          echo "waiting for authentication to take effect before clicking..."
+          AUTHED=0
+          for i in $(seq 1 40); do
+            if log show --predicate 'subsystem == "com.humansongs.clicky"' --last 120s --info 2>/dev/null | grep -q "Authenticated as"; then
+              echo "auth confirmed after ~$((i*3))s"; AUTHED=1; break
+            fi
+            sleep 3
+          done
+          [ "$AUTHED" = 1 ] || echo "WARN: auth marker not seen; proceeding anyway"
+          sleep 12   # let the post-sign-in survey render and settle
           screencapture -x evidence/shots/00-start.png 2>/dev/null || true
           # Step plan. Survey "Claude" has no blue element and renders in a stable
           # spot, so it stays a fixed click; every later target is located by
