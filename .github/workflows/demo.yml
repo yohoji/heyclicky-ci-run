@@ -315,34 +315,25 @@ jobs:
           #  5 type / trigger -> tap the combo twice quickly, then Continue
           #  6 dictation      -> hold + speak, then Continue
           #  7 that's it      -> Continue (done)
-          # BlackHole is the app's input; afplay -> BlackHole output loops back.
-          play_bh() { SwitchAudioSource -t output -s "BlackHole 2ch" >/dev/null 2>&1; run_to 12 afplay "$1" 2>/dev/null || true; }
-          # Hold the hotkey (Ctrl+Option), speak a clip, release — push-to-talk.
-          speak_held() {
-            cliclick kd:ctrl,alt || true
-            sleep 1
-            play_bh "$1"
-            sleep 1
-            cliclick ku:ctrl,alt || true
-          }
-          # Move the cursor in a rough circle around screen centre (for step 4)
-          # while the hotkey is held.
+          # BlackHole is the app's input. Feed a CONTINUOUS clip into it in the
+          # background so the mic meter is ALWAYS reacting — discrete per-step
+          # plays didn't keep the meter alive, so Continue never enabled. Push-to-
+          # talk steps just hold the hotkey while this audio is already playing.
+          ( while :; do SwitchAudioSource -t output -s "BlackHole 2ch" >/dev/null 2>&1; run_to 8 afplay "$HOME/clip.aiff" 2>/dev/null || true; done ) &
+          AUD=$!
+          # Hold Ctrl+Option for a few seconds (the background audio is the speech).
+          speak_held() { cliclick kd:ctrl,alt || true; sleep 6; cliclick ku:ctrl,alt || true; }
+          # Hold the hotkey and move the cursor in a rough circle (step 4).
           circle_ask() {
-            cliclick kd:ctrl,alt || true
-            sleep 1
-            for p in 611,384 587,454 511,484 435,454 411,384 435,314 511,284 587,314 611,384; do
-              cliclick m:$p || true
-            done
-            play_bh "$HOME/circle.aiff"
-            sleep 1
-            cliclick ku:ctrl,alt || true
+            cliclick kd:ctrl,alt || true; sleep 1
+            for p in 611,384 587,454 511,484 435,454 411,384 435,314 511,284 587,314 611,384; do cliclick m:$p || true; done
+            sleep 3; cliclick ku:ctrl,alt || true
           }
           cont() { sleep 2; cliclick c:511,611 || true; sleep 5; }   # Continue
 
-          # Step 1 — mic check: play the clip a few times so the meter reacts.
+          # Step 1 — mic check: the background audio makes the meter dance; Continue.
           screencapture -x evidence/shots/demo-01.png 2>/dev/null || true
-          for r in 1 2 3 4; do play_bh "$HOME/clip.aiff"; sleep 1; done
-          cont
+          sleep 8; cont
 
           # Step 2 — push-to-talk (say your name).
           screencapture -x evidence/shots/demo-02.png 2>/dev/null || true
@@ -374,8 +365,9 @@ jobs:
             cliclick c:511,611 || true
             sleep 5
           done
-          # Stop the frame-burst recorder (a plain kill is safe — no wedge) and
+          # Stop the continuous audio feed and the frame-burst recorder, then
           # stitch the frames into an mp4. framerate 3 keeps it watchable.
+          kill "$AUD" 2>/dev/null || true
           kill "$FULLVID" 2>/dev/null || true
           sleep 1
           NF=$(ls /tmp/frames/f_*.png 2>/dev/null | wc -l | tr -d ' ')
