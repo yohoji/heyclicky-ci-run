@@ -29,8 +29,22 @@ jobs:
       - name: Install cliclick
         run: brew install --quiet cliclick || brew install cliclick || true
 
-      - name: Install coreutils (gtimeout)
-        run: brew install --quiet coreutils || brew install coreutils || true
+      - name: Install audio tooling (do NOT change default device yet)
+        run: |
+          set -x
+          brew install --quiet coreutils || brew install coreutils || true          # gtimeout
+          brew install --quiet switchaudio-osx || brew install switchaudio-osx || true
+          brew install --quiet blackhole-2ch || brew install --cask blackhole-2ch || true
+          # Register the new HAL device with a single coreaudiod restart NOW, well
+          # before the app launches, so the restart never races the app's audio
+          # init (that race broke auth). Crucially we leave the DEFAULT input/output
+          # untouched here, so the app launches + authenticates on the normal
+          # device; we only switch to BlackHole later, at the mic step.
+          sudo killall coreaudiod 2>/dev/null || true
+          sleep 5
+          echo "--- audio devices ---"; SwitchAudioSource -a || true
+          say -o "$HOME/clip.aiff" "Testing, testing, one two three. Hey Clicky, can you hear me now?" || true
+          ls -l "$HOME/clip.aiff" || true
 
       - name: Fetch the app
         run: |
@@ -224,32 +238,55 @@ jobs:
           # After "Meet HeyClicky" the app plays its intro and even drives Safari
           # to Gmail on its own. The real CTA is "Show me" up in the NOTCH (top-
           # center), not the bottom-most blue element, so click it by fixed coord.
+          # Auth + onboarding are done, so it is now safe to switch the default
+          # audio devices to BlackHole (doing this before launch broke auth). The
+          # mic step renders ~150s from here, so the app will read BlackHole as its
+          # default input by then. Output -> BlackHole too, so a clip played to the
+          # output loops back onto the input the app is listening to.
+          echo "switching default audio to BlackHole for the mic step..."
+          SwitchAudioSource -t input  -s "BlackHole 2ch" || true
+          SwitchAudioSource -t output -s "BlackHole 2ch" || true
+          SwitchAudioSource -c || true
           echo "letting the intro play out..."
           sleep 140
           screencapture -x evidence/shots/tutorial-end.png 2>/dev/null || true
           echo "clicking notch 'Show me' CTA"
           cliclick c:511,75 || echo "cliclick failed"
-          sleep 4
+          sleep 5
           screencapture -x evidence/shots/after-showme.png 2>/dev/null || true
-          # The demo's first step is a mic check whose Continue stays disabled
-          # without real audio — and the BlackHole rig that could feed it disrupts
-          # the app's launch/auth, so we dropped it. Instead skip the demo to reach
-          # the resting home. "Skip demo" sits top-right of the demo modal.
-          # gtimeout (coreutils) caps the recorder so it can never hang like before.
           TO=$(command -v gtimeout || command -v timeout || true)
           run_to() { if [ -n "$TO" ]; then "$TO" "$@"; else shift; "$@"; fi; }
-          ( run_to 95 screencapture -V 85 -x evidence/walkthrough.mov 2>evidence/rec_err.log || true ) &
+          # Feed the spoken clip into BlackHole on a loop so the mic meter reacts
+          # and the (otherwise disabled) Continue button enables. Each play is
+          # time-capped so a wedged device can never block.
+          ( for r in $(seq 1 45); do SwitchAudioSource -t output -s "BlackHole 2ch" >/dev/null 2>&1; run_to 8 afplay "$HOME/clip.aiff" 2>/dev/null; sleep 1; done ) &
+          AUD=$!
+          # Record the demo, hard-capped so it can never hang.
+          ( run_to 150 screencapture -V 140 -x evidence/walkthrough.mov 2>evidence/rec_err.log || true ) &
           VID=$!
-          echo "clicking 'Skip demo' (top-right of the demo modal)"
-          cliclick c:709,119 || echo "cliclick failed"
-          sleep 5
-          screencapture -x evidence/shots/after-skip.png 2>/dev/null || true
-          # Capture the resting state for a while.
-          for d in $(seq -w 1 8); do
-            screencapture -x "evidence/shots/home-${d}.png" 2>/dev/null || true
+          # Click the enabled blue Continue/Next through the demo steps. When
+          # Continue is enabled it is the bottom-most blue element (lower than the
+          # Gmail button behind), so the detector targets it correctly; if audio
+          # never lands, Continue stays grey and this will stall on the browser —
+          # the screenshots will show which happened.
+          for d in $(seq -w 1 10); do
+            XY=NONE
+            for try in 1 2 3 4; do
+              sleep 3
+              screencapture -x /tmp/a.png 2>/dev/null || true
+              A=$(swift /tmp/find_target.swift /tmp/a.png blue 2>/dev/null || echo NONE)
+              sleep 2
+              screencapture -x /tmp/b.png 2>/dev/null || true
+              B=$(swift /tmp/find_target.swift /tmp/b.png blue 2>/dev/null || echo NONE)
+              [ "$A" = "$B" ] && [ "$A" != "NONE" ] && [ -n "$A" ] && { XY="$A"; break; }
+            done
+            echo "demo step $d -> $XY"
+            screencapture -x "evidence/shots/demo-${d}.png" 2>/dev/null || true
+            [ "$XY" != "NONE" ] && [ -n "$XY" ] && { cliclick c:${XY%,*},${XY#*,} || true; }
             sleep 6
           done
           wait "$VID" 2>/dev/null || true
+          kill "$AUD" 2>/dev/null || true
           ls -la evidence/walkthrough.mov 2>/dev/null || true
 
       - name: Logs
