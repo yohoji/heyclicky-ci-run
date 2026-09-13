@@ -94,47 +94,49 @@ jobs:
           guard let data = rep.bitmapData else { print("NONE"); exit(0) }
           let spp = rep.samplesPerPixel, bpr = rep.bytesPerRow
           let sx = 1024.0 / Double(W), sy = 768.0 / Double(H)
-          var xs = [Int](); var ys = [Int]()
           func rgb(_ x: Int, _ y: Int) -> (Int, Int, Int) {
             let o = y * bpr + x * spp
             return (Int(data[o]), Int(data[o + 1]), Int(data[o + 2]))
           }
-          let y0 = Int(Double(H) * 0.05)
-          let y1 = Int(Double(H) * (mode == "blue" ? 0.88 : 0.85))
-          var y = y0
-          while y < y1 {
+          // Collect light (system-dialog) pixels and accent-blue pixels in one pass.
+          var lx = [Int](); var ly = [Int]()      // light dialog
+          var bx = [Int](); var by = [Int]()      // accent blue (buttons/dots)
+          let yl0 = Int(Double(H) * 0.05), yl1 = Int(Double(H) * 0.85)   // dialog band
+          let yb0 = Int(Double(H) * 0.10), yb1 = Int(Double(H) * 0.88)   // button band (skip notch)
+          var y = yl0
+          while y < yb1 {
             var x = 0
             while x < W {
               let (r, g, b) = rgb(x, y)
-              let hit = mode == "blue" ? (b > 140 && b > r + 50 && b > g + 30 && r < 120)
-                                       : (r > 205 && g > 205 && b > 205)
-              if hit { xs.append(x); ys.append(y) }
+              if y >= yl0 && y < yl1 && r > 205 && g > 205 && b > 205 { lx.append(x); ly.append(y) }
+              if y >= yb0 && y < yb1 && b > 140 && b > r + 50 && b > g + 30 && r < 120 { bx.append(x); by.append(y) }
               x += 2
             }
             y += 2
           }
-          let minCount = mode == "blue" ? 25 : 800
-          if xs.count < minCount { print("NONE"); exit(0) }
-          var cx = 0.0, cy = 0.0
-          if mode == "blue" {
-            // The card can show a blue play-triangle above the blue button; a
-            // naive centroid lands in the gap and hits nothing. Keep only the
-            // bottom-most blue band so we target the actionable button/dot.
-            let band = Int(Double(H) * 0.05)
-            let ymax = ys.max() ?? 0
-            var bx = [Int](); var by = [Int]()
-            for i in 0..<ys.count where ys[i] >= ymax - band { bx.append(xs[i]); by.append(ys[i]) }
-            cx = Double(bx.reduce(0, +)) / Double(bx.count)
-            cy = Double(by.reduce(0, +)) / Double(by.count)
-          } else {
-            let sxs = xs.sorted(), sys2 = ys.sorted()
-            func pct(_ arr: [Int], _ p: Double) -> Double { Double(arr[Int(Double(arr.count) * p)]) }
-            let xlo = pct(sxs, 0.05), xhi = pct(sxs, 0.95)
-            let ylo = pct(sys2, 0.05), yhi = pct(sys2, 0.95)
-            cx = xlo + 0.73 * (xhi - xlo)   // Allow sits right-of-center
-            cy = ylo + 0.86 * (yhi - ylo)   // ...near the dialog bottom
+          func fmt(_ cx: Double, _ cy: Double) -> String { "\(Int((cx * sx).rounded())),\(Int((cy * sy).rounded()))" }
+          func blueTarget() -> String? {
+            if bx.count < 25 { return nil }
+            let band = Int(Double(H) * 0.05); let ymax = by.max() ?? 0
+            var cbx = [Int](); var cby = [Int]()
+            for i in 0..<by.count where by[i] >= ymax - band { cbx.append(bx[i]); cby.append(by[i]) }
+            return fmt(Double(cbx.reduce(0, +)) / Double(cbx.count), Double(cby.reduce(0, +)) / Double(cby.count))
           }
-          print("\(Int((cx * sx).rounded())),\(Int((cy * sy).rounded()))")
+          func dialogTarget(_ minC: Int) -> String? {
+            if lx.count < minC { return nil }
+            let sxs = lx.sorted(), sys2 = ly.sorted()
+            func pct(_ arr: [Int], _ p: Double) -> Double { Double(arr[Int(Double(arr.count) * p)]) }
+            let xlo = pct(sxs, 0.05), xhi = pct(sxs, 0.95), ylo = pct(sys2, 0.05), yhi = pct(sys2, 0.95)
+            return fmt(xlo + 0.73 * (xhi - xlo), ylo + 0.86 * (yhi - ylo))   // Allow: right-of-centre, near bottom
+          }
+          switch mode {
+          case "blue":  print(blueTarget() ?? "NONE")
+          case "allow": print(dialogTarget(800) ?? "NONE")
+          default:      // "classify": what is on screen + where to click
+            if let d = dialogTarget(1500) { print("dialog \(d)") }
+            else if let b = blueTarget()  { print("blue \(b)") }
+            else { print("none") }
+          }
           SW
           # ---- Pre-grant Accessibility with a real csreq, before launch ------
           # A bare TCC row (csreq NULL) is inert: tccd verifies the requesting
@@ -202,49 +204,49 @@ jobs:
           [ "$AUTHED" = 1 ] || echo "WARN: auth marker not seen; proceeding anyway"
           sleep 12   # let the post-sign-in survey render and settle
           screencapture -x evidence/shots/00-start.png 2>/dev/null || true
-          # Step plan. Survey "Claude" has no blue element and renders in a stable
-          # spot, so it stays a fixed click; every later target is located by
-          # vision: blue color dot -> greeting button -> Let's start -> Grant
-          # Microphone -> Allow.
-          # Pinned to v1.0.48 (no "Pick the style" screen). Plan: survey Claude
-          # (fixed), color dot, Give me a home, Let's start, Grant Microphone,
-          # Allow (mic dialog). Accessibility + Screen Recording are pre-granted
-          # (csreq) so the app auto-skips them; the final blue click presses
-          # "Grant Access" on "Complete screen access", which fires a final macOS
-          # dialog ("bypass the private window picker") with a blue Allow button;
-          # the last two blue clicks press that Allow, then "Meet HeyClicky" on
-          # the "All set" screen to leave onboarding and reach the live app.
-          STEPS="fixed:517,486 blue blue blue blue allow blue blue blue"
-          n=0
-          for step in $STEPS; do
-            n=$((n+1))
-            if [ "${step%%:*}" = "fixed" ]; then
-              XY="${step#fixed:}"
-            else
-              # The card slides into place, so a detect-then-click races the
-              # animation and lands on stale coords. Require two detections 2s
-              # apart to AGREE (card stationary) before accepting the target.
-              XY=NONE
-              for try in 1 2 3 4 5 6; do
-                sleep 4
-                screencapture -x /tmp/a.png 2>/dev/null || true
-                A=$(swift /tmp/find_target.swift /tmp/a.png "$step" 2>/dev/null || echo NONE)
-                sleep 2
-                screencapture -x /tmp/b.png 2>/dev/null || true
-                B=$(swift /tmp/find_target.swift /tmp/b.png "$step" 2>/dev/null || echo NONE)
-                if [ "$A" = "$B" ] && [ "$A" != "NONE" ] && [ -n "$A" ]; then XY="$A"; break; fi
-              done
+          # ---- STATE-AWARE onboarding driver ------------------------------
+          # Instead of a rigid step sequence (which desynced when a screen — e.g.
+          # the mic prompt — appeared late and got skipped, leaving it unclicked),
+          # loop: look at what is ACTUALLY on screen and act.
+          #   dialog -> click its Allow button (handles the mic + bypass prompts
+          #             WHENEVER they appear, no timing assumption)
+          #   blue   -> click the blue button/dot (color pick, Give me a home,
+          #             Let's start, Grant Microphone, Grant Access, Meet HeyClicky)
+          #   none   -> early: it's the survey (no blue button) -> click "Claude";
+          #             late (after we have advanced): the tutorial has started ->
+          #             onboarding is done.
+          # This self-recovers: a late dialog is simply clicked on a later loop.
+          advanced=0
+          noneStreak=0
+          lastXY=""
+          for i in $(seq 1 60); do
+            screencapture -x /tmp/cur.png 2>/dev/null || true
+            R=$(swift /tmp/find_target.swift /tmp/cur.png classify 2>/dev/null || echo none)
+            MODE="${R%% *}"; XY="${R#* }"
+            echo "onboard iter $i: $R"
+            case "$MODE" in
+              dialog)
+                cliclick c:${XY%,*},${XY#*,} || true
+                advanced=$((advanced+1)); noneStreak=0 ;;
+              blue)
+                # avoid hammering the exact same spot forever (stuck) — still click,
+                # but count repeats toward the done heuristic.
+                cliclick c:${XY%,*},${XY#*,} || true
+                [ "$XY" = "$lastXY" ] && noneStreak=$((noneStreak+1)) || { advanced=$((advanced+1)); noneStreak=0; }
+                lastXY="$XY" ;;
+              *)
+                noneStreak=$((noneStreak+1))
+                if [ "$advanced" -lt 3 ]; then
+                  cliclick c:517,486 || true          # survey: pick "Claude"
+                fi ;;
+            esac
+            screencapture -x "evidence/shots/onboard-$(printf %02d "$i").png" 2>/dev/null || true
+            # Onboarding is complete once we have advanced through the screens and
+            # the actionable card is gone for a couple of iterations (tutorial).
+            if [ "$advanced" -ge 6 ] && [ "$noneStreak" -ge 3 ]; then
+              echo "onboarding complete after $i iters (advanced=$advanced)"; break
             fi
-            echo "step $n mode=$step -> $XY"
-            if [ "$XY" = "NONE" ] || [ -z "$XY" ]; then
-              echo "no target found for step $n ($step)"
-              screencapture -x "evidence/shots/step-${n}-notarget.png" 2>/dev/null || true
-              continue
-            fi
-            X="${XY%,*}"; Y="${XY#*,}"
-            cliclick c:${X},${Y} || echo "cliclick failed"
-            sleep 7
-            screencapture -x "evidence/shots/step-${n}.png" 2>/dev/null || true
+            sleep 4
           done
           # After the mic Allow the app checks Accessibility. Because we
           # pre-granted it (with csreq) before launch, a working grant means the
