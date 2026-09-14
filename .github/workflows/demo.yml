@@ -436,7 +436,11 @@ jobs:
           // the modifier keycode that changed (0x3B=L-Control, 0x3A=L-Option).
           func flags(_ f: CGEventFlags, _ key: CGKeyCode, _ down: Bool) {
               guard let e = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: down) else { return }
-              e.type = .flagsChanged; e.flags = f; e.post(tap: .cgSessionEventTap)
+              e.type = .flagsChanged; e.flags = f
+              // Post at the HID tap so the event flows up through the session tap
+              // exactly like a real hardware key, matching how the runtime monitor
+              // sees hardware Control taps (session-level posting skips that path).
+              e.post(tap: .cghidEventTap)
           }
           // One clean Control tap with a given hold (ms): press (flags=control),
           // hold, release (flags=[]).
