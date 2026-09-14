@@ -302,85 +302,94 @@ jobs:
           # app skips the Accessibility screen and lands on Screen Recording
           # (permission 3 of 3) on its own. Observe which screen we end on.
           echo "--- tcc_write.log ---"; cat evidence/tcc_write.log
-          # ---- Let intro play, click the notch "Show me" CTA, record walkthrough
-          # After "Meet HeyClicky" the app plays its intro and even drives Safari
-          # to Gmail on its own. The real CTA is "Show me" up in the NOTCH (top-
-          # center), not the bottom-most blue element, so click it by fixed coord.
-          # Auth + onboarding are done, so it is now safe to switch the default
-          # audio devices to BlackHole (doing this before launch broke auth). The
-          # mic step renders ~150s from here, so the app will read BlackHole as its
-          # default input by then. Output -> BlackHole too, so a clip played to the
-          # output loops back onto the input the app is listening to.
-          echo "switching default audio to BlackHole for the mic step..."
-          SwitchAudioSource -t input  -s "BlackHole 2ch" || true
+          # ---- Reach the LIVE app: start the intro, then SKIP it ------------
+          # KEY INSIGHT from the app's own os_log: it gates ALL hotkeys (including
+          # the control-double-tap text trigger) on onboarding being COMPLETE. The
+          # log reports the exact phase via 'reason=' on the IntegrationSuggestions
+          # sampler line, in order:
+          #   permissionsIncomplete -> onboardingIncomplete (the "All set / Meet
+          #   HeyClicky" screen) -> [tap Meet HeyClicky] -> onboardingIntroActive
+          #   -> onboardingVideoActive -> (tutorial) -> LIVE (line stops / reason
+          #   is no longer an onboarding phase).
+          # The decompiled binary exposes two skip paths that don't need the mic:
+          # the Escape key (SkipEscapeArmedAt) and a cursor SHAKE (SkipShake*
+          # reversal-count / path-length within a short window). Drive both while
+          # polling the log, and stop the moment we leave every onboarding phase.
+          # Record the app's spoken reply: route default OUTPUT to BlackHole (the
+          # avfoundation recorder captures "BlackHole 2ch"), so its TTS is audible.
           SwitchAudioSource -t output -s "BlackHole 2ch" || true
-          SwitchAudioSource -c || true
-          echo "letting the intro play out..."
-          sleep 140
-          screencapture -x evidence/shots/tutorial-end.png 2>/dev/null || true
-          echo "clicking notch 'Show me' CTA"
-          cliclick c:511,75 || echo "cliclick failed"
-          sleep 5
-          screencapture -x evidence/shots/after-showme.png 2>/dev/null || true
-          # The app's mic dropdown defaults to "Apple Virtual Sound Device" (it
-          # does NOT follow the system default), which never receives our clip.
-          # Switch it to BlackHole 2ch via the dropdown + type-select so the app
-          # listens on the device the clip plays into.
-          echo "selecting BlackHole 2ch in the app mic dropdown..."
-          cliclick c:511,519 || true      # open the device dropdown
-          sleep 1
-          screencapture -x evidence/shots/dropdown-open.png 2>/dev/null || true
-          # Menu opens below the pill: System Default / Apple Virtual / BlackHole
-          # 2ch / Null. BlackHole is the 3rd item at ~y=608.
-          cliclick c:500,608 || true       # click "BlackHole 2ch"
-          sleep 1
-          screencapture -x evidence/shots/after-device.png 2>/dev/null || true
-          # ---- Skip the guided demo to reach the LIVE app -----------------
-          # The demo's step-1 mic check depends on the flaky BlackHole loopback and
-          # intermittently blocks the whole walkthrough. The TEXT trigger needs no
-          # mic, so skip straight to the live app and test it there.
-          echo "clicking 'Skip demo' to reach the live app"
-          sleep 2
-          cliclick c:709,119 || true      # "Skip demo" (top-right of the demo modal)
-          sleep 6
-          screencapture -x evidence/shots/after-skip.png 2>/dev/null || true
-          # If a follow-up "Let's start"/greeting button appears, nudge it, then let
-          # the app settle into its live/home state.
-          for s in 1 2 3; do
-            cliclick c:511,124 || true; sleep 2
-            screencapture -x "evidence/shots/live-settle-${s}.png" 2>/dev/null || true
+          # Read the most recent onboarding phase from the app log (empty = the
+          # sampler stopped suppressing => onboarding done => live).
+          app_state() { log show --predicate 'subsystem == "com.humansongs.clicky"' --last 25s 2>/dev/null | grep -oE 'reason=[A-Za-z]+' | tail -1; }
+          # A vigorous cursor shake in ONE cliclick call (fast far reversals that
+          # exceed the shake reversal-count + path-length thresholds in-window).
+          SHAKE_PTS=""; for r in $(seq 1 20); do SHAKE_PTS="$SHAKE_PTS m:170,400 m:850,400"; done
+          shake() { cliclick $SHAKE_PTS || true; }
+          # 1) Start the intro: click "Meet HeyClicky" (a pale-blue button the
+          #    vision classifier misses) at its fixed spot, retrying until the log
+          #    shows the intro/video actually started.
+          echo "clicking 'Meet HeyClicky' to start the intro..."
+          for k in 1 2 3 4 5 6; do
+            cliclick c:511,143 || true
+            sleep 4
+            st=$(app_state); echo "meet-heyclicky click $k -> reason='${st}'"
+            case "$st" in *ntroActive*|*ideoActive*|*utorial*) break;; esac
+          done
+          screencapture -x evidence/shots/intro-started.png 2>/dev/null || true
+          # 2) Skip the intro/tutorial: alternate Escape taps and cursor shakes,
+          #    polling the phase. Leaving every onboarding phase => live home =>
+          #    hotkeys armed. Require two consecutive "live" reads (log can lag).
+          echo "skipping the intro/tutorial to reach the live home..."
+          LIVE=0
+          for i in $(seq 1 48); do    # up to ~5 min backstop
+            st=$(app_state); echo "skip iter $i: reason='${st}'"
+            case "$st" in
+              *ermissions*|*nboarding*|*ntro*|*ideo*|*utorial*)
+                LIVE=0
+                cliclick kp:esc || true        # Escape skip (SkipEscapeArmedAt)
+                sleep 1
+                shake                          # cursor shake skip (SkipShake*)
+                cliclick kp:esc || true ;;
+              *)
+                # No onboarding phase seen recently -> treat as live (need 2x).
+                LIVE=$((LIVE+1))
+                if [ "$LIVE" -ge 2 ]; then echo "onboarding complete -> LIVE"; break; fi ;;
+            esac
+            screencapture -x "evidence/shots/skip-$(printf %02d "$i").png" 2>/dev/null || true
+            sleep 4
           done
           sleep 3
+          screencapture -x evidence/shots/live-home.png 2>/dev/null || true
           # ---- TEXT interaction: double-tap Control to type instead of talk ----
-          # The app is now live. Stop the voice audio first (so it isn't
-          # "listening"), then double-tap Control to open the text box, type a
-          # message, send it, and record the agent's reply.
-          kill "$AUD" 2>/dev/null || true
-          sleep 2
-          # Clean control-only double-tap per the decompiled monitor: clear all
-          # modifiers first (0.4s hold max, 0.5s between taps, Control-only).
-          echo "clean control double-tap to toggle text input"
-          cliclick ku:cmd,ctrl,alt,shift,fn || true
-          sleep 1
-          cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
-          sleep 2
-          screencapture -x evidence/shots/text-00-dictation.png 2>/dev/null || true
-          # Belt-and-suspenders: dismiss any lingering macOS dictation prompt, retry.
-          cliclick c:428,289 || true      # "Don't Ask Again" (harmless if absent)
-          sleep 1
-          cliclick ku:cmd,ctrl,alt,shift,fn || true
-          sleep 1
-          cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
-          sleep 3
+          # The app should now be LIVE (onboarding skipped), so the control-double-
+          # tap text trigger is armed. Per the decompiled GlobalPushToTalkShortcut
+          # Monitor the tap only counts when the modifier flags are EXACTLY Control
+          # (0x40000), each press < 0.4s, and the two taps land within 0.5s. Clear
+          # every stray modifier first, then do a clean control-only double-tap.
+          echo "app state before text trigger: '$(app_state)'"
+          # Do the clean double-tap up to 3 times, capturing after each so we catch
+          # the input box whenever it opens (also dismiss any macOS dictation prompt
+          # that a Control double-tap can raise).
+          for a in 1 2 3; do
+            cliclick ku:cmd,ctrl,alt,shift,fn || true      # clear stray modifiers
+            sleep 1
+            cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
+            sleep 2
+            screencapture -x "evidence/shots/text-00-attempt-${a}.png" 2>/dev/null || true
+            cliclick c:428,289 || true      # "Don't Ask Again" on dictation prompt (harmless if absent)
+            sleep 1
+          done
           screencapture -x evidence/shots/text-01-open.png 2>/dev/null || true
           echo "typing a message"
           cliclick t:"Hey Clicky, what is on my screen right now?" || true
           sleep 2
           screencapture -x evidence/shots/text-02-typed.png 2>/dev/null || true
           cliclick kp:return || true       # send
-          # Let the agent respond and capture it.
-          for t in $(seq -w 1 8); do
+          echo "state after send: '$(app_state)'"
+          # Let the agent respond and capture it (frames + periodic state logging).
+          for t in $(seq -w 1 10); do
             screencapture -x "evidence/shots/text-resp-${t}.png" 2>/dev/null || true
+            [ $((10#$t % 3)) -eq 0 ] && echo "resp $t state: '$(app_state)'"
             sleep 5
           done
           # Stop the continuous audio feed and the frame-burst recorder, then
