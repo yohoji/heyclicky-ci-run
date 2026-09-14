@@ -217,6 +217,18 @@ jobs:
             -c:v libx264 -preset ultrafast -c:a aac \
             evidence/av.mkv > evidence/av.log 2>&1 &
           AVVID=$!
+          # ---- Attempt to BYPASS onboarding via UserDefaults --------------
+          # The binary reads a `hasCompletedOnboarding` key (and a
+          # `clicky.upgrade.skipOnboardingVideo.v1` flag). Each CI run is a fresh
+          # VM with no persisted defaults, so onboarding always runs. If these are
+          # UserDefaults-backed, writing them before launch (with permissions
+          # already pre-granted via TCC) should drop the app straight into its
+          # live home, where the control-double-tap text trigger is armed. Harmless
+          # if the app ignores them (the state-aware driver still handles onboarding).
+          defaults write com.humansongs.clicky hasCompletedOnboarding -bool true 2>/dev/null || true
+          defaults write com.humansongs.clicky "clicky.upgrade.skipOnboardingVideo.v1" -bool true 2>/dev/null || true
+          defaults write com.humansongs.clicky skipOnboardingVideo -bool true 2>/dev/null || true
+          killall cfprefsd 2>/dev/null || true
           open "$HOME/HeyClicky.app"
           sleep 18
           { set +x; } 2>/dev/null
@@ -302,62 +314,70 @@ jobs:
           # app skips the Accessibility screen and lands on Screen Recording
           # (permission 3 of 3) on its own. Observe which screen we end on.
           echo "--- tcc_write.log ---"; cat evidence/tcc_write.log
-          # ---- Reach the LIVE app: start the intro, then SKIP it ------------
+          # ---- Reach the LIVE app -----------------------------------------
           # KEY INSIGHT from the app's own os_log: it gates ALL hotkeys (including
           # the control-double-tap text trigger) on onboarding being COMPLETE. The
           # log reports the exact phase via 'reason=' on the IntegrationSuggestions
-          # sampler line, in order:
-          #   permissionsIncomplete -> onboardingIncomplete (the "All set / Meet
-          #   HeyClicky" screen) -> [tap Meet HeyClicky] -> onboardingIntroActive
-          #   -> onboardingVideoActive -> (tutorial) -> LIVE (line stops / reason
-          #   is no longer an onboarding phase).
-          # The decompiled binary exposes two skip paths that don't need the mic:
-          # the Escape key (SkipEscapeArmedAt) and a cursor SHAKE (SkipShake*
-          # reversal-count / path-length within a short window). Drive both while
-          # polling the log, and stop the moment we leave every onboarding phase.
-          # Record the app's spoken reply: route default OUTPUT to BlackHole (the
-          # avfoundation recorder captures "BlackHole 2ch"), so its TTS is audible.
+          # sampler line:
+          #   permissionsIncomplete -> onboardingIncomplete ("All set / Meet
+          #   HeyClicky") -> onboardingIntroActive -> onboardingVideoActive ->
+          #   onboardingTutorialEngaged ("Show me" guided tour) -> LIVE (the line
+          #   stops / reason is no longer an onboarding phase).
+          # We may already be LIVE here if the UserDefaults bypass took. Otherwise
+          # drive the sequence to completion: the VIDEO skips via Escape + cursor
+          # SHAKE (decompiled SkipEscapeArmedAt / SkipShake*), but the TUTORIAL does
+          # NOT skip that way — it needs its notch CTA ("Meet HeyClicky" -> "Show
+          # me" -> Continue/Next) clicked, and the mic/speaker steps need audio.
+          # So: feed BlackHole a CONTINUOUS clip (mic meter), route OUTPUT to
+          # BlackHole too (records the app's spoken reply), and each iteration take
+          # every advance action while polling the phase until we leave onboarding.
+          SwitchAudioSource -t input  -s "BlackHole 2ch" || true
           SwitchAudioSource -t output -s "BlackHole 2ch" || true
+          ( while :; do
+              SwitchAudioSource -t input  -s "BlackHole 2ch" >/dev/null 2>&1
+              afplay "$HOME/clip.aiff" >/dev/null 2>&1 || true
+            done ) & AUD=$!
           # Read the most recent onboarding phase from the app log (empty = the
           # sampler stopped suppressing => onboarding done => live).
           app_state() { log show --predicate 'subsystem == "com.humansongs.clicky"' --last 25s 2>/dev/null | grep -oE 'reason=[A-Za-z]+' | tail -1; }
-          # A vigorous cursor shake in ONE cliclick call (fast far reversals that
-          # exceed the shake reversal-count + path-length thresholds in-window).
+          # Vigorous cursor shake in ONE cliclick call (fast far reversals -> skips
+          # the intro video via the SkipShake* thresholds).
           SHAKE_PTS=""; for r in $(seq 1 20); do SHAKE_PTS="$SHAKE_PTS m:170,400 m:850,400"; done
           shake() { cliclick $SHAKE_PTS || true; }
-          # 1) Start the intro: click "Meet HeyClicky" (a pale-blue button the
-          #    vision classifier misses) at its fixed spot, retrying until the log
-          #    shows the intro/video actually started.
-          echo "clicking 'Meet HeyClicky' to start the intro..."
-          for k in 1 2 3 4 5 6; do
-            cliclick c:511,143 || true
-            sleep 4
-            st=$(app_state); echo "meet-heyclicky click $k -> reason='${st}'"
-            case "$st" in *ntroActive*|*ideoActive*|*utorial*) break;; esac
-          done
-          screencapture -x evidence/shots/intro-started.png 2>/dev/null || true
-          # 2) Skip the intro/tutorial: alternate Escape taps and cursor shakes,
-          #    polling the phase. Leaving every onboarding phase => live home =>
-          #    hotkeys armed. Require two consecutive "live" reads (log can lag).
-          echo "skipping the intro/tutorial to reach the live home..."
+          echo "initial phase: '$(app_state)'"
           LIVE=0
-          for i in $(seq 1 48); do    # up to ~5 min backstop
-            st=$(app_state); echo "skip iter $i: reason='${st}'"
+          for i in $(seq 1 70); do    # ~8 min backstop
+            st=$(app_state); echo "reach-live iter $i: reason='${st}'"
             case "$st" in
-              *ermissions*|*nboarding*|*ntro*|*ideo*|*utorial*)
+              *ermission*|*nboarding*|*ntroActive*|*ideoActive*|*utorial*)
+                # Still in an onboarding phase -> act to advance it.
                 LIVE=0
-                cliclick kp:esc || true        # Escape skip (SkipEscapeArmedAt)
-                sleep 1
-                shake                          # cursor shake skip (SkipShake*)
-                cliclick kp:esc || true ;;
+                case "$st" in
+                  *ntroActive*|*ideoActive*)
+                    # Intro video: skip via Escape + shake.
+                    cliclick kp:esc || true; sleep 1; shake; cliclick kp:esc || true ;;
+                  *utorial*)
+                    # Guided tour: click the notch CTA (Show me / Continue / Next)
+                    # and a couple of likely advance spots; audio drives mic steps.
+                    cliclick c:511,86  || true; sleep 1     # notch primary CTA
+                    cliclick c:511,143 || true; sleep 1     # lower CTA (Meet/Continue)
+                    cliclick c:511,611 || true ;;           # bottom-center Continue
+                  *)
+                    # permissionsIncomplete / onboardingIncomplete ("Meet HeyClicky"):
+                    # click the pale-blue CTAs to advance.
+                    cliclick c:511,143 || true; sleep 1     # Meet HeyClicky
+                    cliclick c:511,86  || true ;;
+                esac ;;
               *)
-                # No onboarding phase seen recently -> treat as live (need 2x).
+                # Empty or any non-onboarding reason -> the sampler stopped
+                # suppressing => onboarding done => LIVE (require 2 in a row).
                 LIVE=$((LIVE+1))
                 if [ "$LIVE" -ge 2 ]; then echo "onboarding complete -> LIVE"; break; fi ;;
             esac
-            screencapture -x "evidence/shots/skip-$(printf %02d "$i").png" 2>/dev/null || true
-            sleep 4
+            screencapture -x "evidence/shots/reach-$(printf %02d "$i").png" 2>/dev/null || true
+            sleep 5
           done
+          kill "$AUD" 2>/dev/null || true    # stop the continuous mic feed
           sleep 3
           screencapture -x evidence/shots/live-home.png 2>/dev/null || true
           # ---- TEXT interaction: double-tap Control to type instead of talk ----
