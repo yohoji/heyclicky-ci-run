@@ -369,9 +369,10 @@ jobs:
           screencapture -x evidence/shots/demo-04.png 2>/dev/null || true
           circle_ask; cont
 
-          # Step 5 — type / text trigger: tap the combo twice, quickly.
+          # Step 5 — type / text trigger: double-tap CONTROL (not Ctrl+Option) to
+          # toggle text input.
           screencapture -x evidence/shots/demo-05.png 2>/dev/null || true
-          cliclick kd:ctrl,alt ku:ctrl,alt kd:ctrl,alt ku:ctrl,alt || true
+          cliclick kd:ctrl ku:ctrl kd:ctrl ku:ctrl || true
           cont
 
           # Step 6 — dictation.
@@ -385,6 +386,26 @@ jobs:
           for d in 08 09 10; do
             screencapture -x "evidence/shots/demo-${d}.png" 2>/dev/null || true
             cliclick c:511,611 || true
+            sleep 5
+          done
+          # ---- TEXT interaction: double-tap Control to type instead of talk ----
+          # The app is now live. Stop the voice audio first (so it isn't
+          # "listening"), then double-tap Control to open the text box, type a
+          # message, send it, and record the agent's reply.
+          kill "$AUD" 2>/dev/null || true
+          sleep 2
+          echo "double-tapping Control to toggle text input"
+          cliclick kd:ctrl ku:ctrl kd:ctrl ku:ctrl || true
+          sleep 3
+          screencapture -x evidence/shots/text-01-open.png 2>/dev/null || true
+          echo "typing a message"
+          cliclick t:"Hey Clicky, what is on my screen right now?" || true
+          sleep 2
+          screencapture -x evidence/shots/text-02-typed.png 2>/dev/null || true
+          cliclick kp:return || true       # send
+          # Let the agent respond and capture it.
+          for t in $(seq -w 1 8); do
+            screencapture -x "evidence/shots/text-resp-${t}.png" 2>/dev/null || true
             sleep 5
           done
           # Stop the continuous audio feed and the frame-burst recorder, then
