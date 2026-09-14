@@ -194,6 +194,16 @@ jobs:
           mkdir -p /tmp/frames
           ( fi=0; while :; do fi=$((fi+1)); screencapture -x "$(printf /tmp/frames/f_%05d.png "$fi")" 2>/dev/null; sleep 1; done ) &
           FULLVID=$!
+          # ALSO record a real-time screen+AUDIO capture (ffmpeg avfoundation) so we
+          # can HEAR the app speak. Audio comes from BlackHole (where the app's TTS
+          # and the fed clip both play). May be black if ffmpeg lacks Screen
+          # Recording; the frame burst above is the reliable video-only fallback.
+          echo "--- avfoundation devices ---"; ffmpeg -hide_banner -f avfoundation -list_devices true -i "" 2>&1 | grep -iE "screen|blackhole" || true
+          ffmpeg -nostdin -y -f avfoundation -capture_cursor 1 -framerate 12 \
+            -i "Capture screen 0:BlackHole 2ch" -t 700 -pix_fmt yuv420p \
+            -c:v libx264 -preset ultrafast -movflags +faststart \
+            evidence/av.mp4 > evidence/av.log 2>&1 &
+          AVVID=$!
           open "$HOME/HeyClicky.app"
           sleep 18
           { set +x; } 2>/dev/null
@@ -336,7 +346,10 @@ jobs:
             for p in 611,384 587,454 511,484 435,454 411,384 435,314 511,284 587,314 611,384; do cliclick m:$p || true; done
             sleep 3; cliclick ku:ctrl,alt || true
           }
-          cont() { sleep 2; cliclick c:511,611 || true; sleep 5; }   # Continue
+          # Agent steps take 15-30s to respond and only then does Continue enable,
+          # so be patient: click Continue repeatedly until the step advances
+          # (clicks on a disabled Continue are harmless).
+          cont() { for c in $(seq 1 10); do sleep 5; cliclick c:511,611 || true; done; }
 
           # Step 1 — mic check: the background audio makes the meter dance; Continue.
           screencapture -x evidence/shots/demo-01.png 2>/dev/null || true
@@ -375,6 +388,10 @@ jobs:
           # Stop the continuous audio feed and the frame-burst recorder, then
           # stitch the frames into an mp4. framerate 3 keeps it watchable.
           kill "$AUD" 2>/dev/null || true
+          # Stop the ffmpeg av recorder with SIGINT so it writes a valid mp4.
+          kill -INT "$AVVID" 2>/dev/null || true
+          sleep 4; kill -9 "$AVVID" 2>/dev/null || true
+          ls -la evidence/av.mp4 2>/dev/null; echo "--- av.log ---"; tail -5 evidence/av.log 2>/dev/null || true
           kill "$FULLVID" 2>/dev/null || true
           sleep 1
           NF=$(ls /tmp/frames/f_*.png 2>/dev/null | wc -l | tr -d ' ')
