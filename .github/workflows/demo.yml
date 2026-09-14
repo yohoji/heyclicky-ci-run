@@ -386,59 +386,77 @@ jobs:
           kill "$AUD" 2>/dev/null || true    # stop the continuous mic feed
           sleep 3
           screencapture -x evidence/shots/live-home.png 2>/dev/null || true
-          # ---- TEXT interaction: double-tap Control to type instead of talk ----
-          # THE fix: the decompiled GlobalPushToTalkShortcutMonitor detects the
-          # control double-tap ONLY inside its `type == 0xc` (kCGEventFlagsChanged)
-          # branch — it reads previousDeviceIndependentFlagsAfterFlagsChanged.
-          # cliclick's `kd:ctrl` posts a keyDown (type 10) of the control KEYCODE,
-          # which routes to a different branch and is NEVER seen as a modifier
-          # change, so no double-tap this whole time actually reached the detector.
-          # Post REAL flagsChanged events for Control via CGEvent instead: flags =
-          # .maskControl (0x40000) on press, [] on release, keycode 0x3B, at the
-          # session tap (the monitor is a kCGSessionEventTap). Timing per the
-          # decompiled thresholds: each hold < 0.4s, gap between taps < 0.5s.
-          cat > /tmp/ctrl_tap.swift <<'SWIFT'
+          # ---- TEXT interaction + DIAGNOSTIC BATTERY -----------------------
+          # We are reliably LIVE now (notchExpanded home, signed in as dryohoji).
+          # A prior run posted REAL flagsChanged Control double-taps (the decompiled
+          # GlobalPushToTalkShortcutMonitor only detects the control double-tap in
+          # its type==0xc / kCGEventFlagsChanged branch), but no composer opened —
+          # likely because the notch was already EXPANDED, or the modifier events
+          # aren't reaching the tap. This battery tests each hypothesis with a
+          # screenshot after every action so we can see exactly which path works.
+          # Keyboard emitter: posts genuine flagsChanged modifier events (keyDown
+          # posts a real keyDown), so we can reproduce hardware Control/Option taps
+          # and holds. Arg selects the gesture.
+          cat > /tmp/keys.swift <<'SWIFT'
           import CoreGraphics
           import Foundation
           let src = CGEventSource(stateID: .hidSystemState)
-          func emitFlags(_ f: CGEventFlags) {
-              guard let e = CGEvent(keyboardEventSource: src, virtualKey: 0x3B,
-                                    keyDown: f.contains(.maskControl)) else { return }
-              e.type = .flagsChanged          // real Control press/release = flagsChanged
-              e.flags = f                     // .maskControl on press, [] on release
-              e.post(tap: .cgSessionEventTap)
+          // Post a flagsChanged with the given device-independent flags; `key` is
+          // the modifier keycode that changed (0x3B=L-Control, 0x3A=L-Option).
+          func flags(_ f: CGEventFlags, _ key: CGKeyCode) {
+              guard let e = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: true) else { return }
+              e.type = .flagsChanged; e.flags = f; e.post(tap: .cgSessionEventTap)
           }
-          func tapControl() {
-              emitFlags(.maskControl)          // control down
-              usleep(80_000)                   // 80ms hold  (< 0.4s)
-              emitFlags([])                    // control up (all device-independent flags cleared)
+          func ctrlTap() { flags(.maskControl, 0x3B); usleep(80_000); flags([], 0x3B) }
+          let mode = CommandLine.arguments.dropFirst().first ?? "double"
+          switch mode {
+          case "double":                              // control double-tap -> text mode
+              flags([], 0x3B); usleep(120_000)
+              ctrlTap(); usleep(160_000); ctrlTap()
+          case "hold":                                // control+option hold -> voice listen
+              flags(.maskControl, 0x3B); usleep(60_000)
+              flags([.maskControl, .maskAlternate], 0x3A); usleep(3_500_000)
+              flags(.maskControl, 0x3A); usleep(60_000); flags([], 0x3B)
+          default: break
           }
-          emitFlags([]); usleep(120_000)       // clear any residual modifier state
-          tapControl()
-          usleep(160_000)                      // 160ms between taps (< 0.5s)
-          tapControl()
           SWIFT
-          echo "app state before text trigger: '$(app_state)'"
-          # Fire the real flagsChanged double-tap up to 3 times, capturing after
-          # each so we catch the input box whenever it opens (also dismiss any macOS
-          # dictation prompt a Control double-tap can raise).
-          for a in 1 2 3; do
-            swift /tmp/ctrl_tap.swift || true
-            sleep 2
-            screencapture -x "evidence/shots/text-00-attempt-${a}.png" 2>/dev/null || true
-            cliclick c:428,289 || true      # "Don't Ask Again" on dictation prompt (harmless if absent)
-            sleep 1
-          done
-          screencapture -x evidence/shots/text-01-open.png 2>/dev/null || true
-          echo "typing a message"
+          echo "app state before battery: '$(app_state)'"
+          shot() { screencapture -x "evidence/shots/$1.png" 2>/dev/null || true; }
+          shot diag-00-home
+          # A) Keyboard reachability: click the panel Search box and type — if text
+          #    appears there, synthetic key events reach the app.
+          cliclick c:150,139 || true; sleep 1
+          cliclick t:"reachtest" || true; sleep 1
+          shot diag-01-searchtype
+          cliclick c:150,139 || true; cliclick kp:esc || true; sleep 1   # clear search
+          # B) Voice hold (control+option) — does the pill switch to "listening"?
+          #    Confirms our modifier events reach the shortcut monitor.
+          swift /tmp/keys.swift hold || true; sleep 1
+          shot diag-02-voicehold
+          # C) Control double-tap while the notch is EXPANDED (as before).
+          swift /tmp/keys.swift double || true; sleep 2
+          shot diag-03-double-expanded
+          # D) COLLAPSE the notch (close button top-right of the panel), then
+          #    double-tap — text mode may require the collapsed/idle notch.
+          cliclick c:968,79 || true; sleep 2
+          shot diag-04-collapsed
+          swift /tmp/keys.swift double || true; sleep 2
+          shot diag-05-double-collapsed
+          # E) Click the greeting pill (the composer affordance), then double-tap.
+          cliclick c:665,418 || true; sleep 1
+          shot diag-06-pill
+          swift /tmp/keys.swift double || true; sleep 2
+          shot diag-07-double-after-pill
+          # Now TYPE the message and send it (whichever path opened a field will
+          # receive it), then capture the reply.
+          echo "typing the message"
           cliclick t:"Hey Clicky, what is on my screen right now?" || true
           sleep 2
-          screencapture -x evidence/shots/text-02-typed.png 2>/dev/null || true
-          cliclick kp:return || true       # send
+          shot text-02-typed
+          cliclick kp:return || true
           echo "state after send: '$(app_state)'"
-          # Let the agent respond and capture it (frames + periodic state logging).
           for t in $(seq -w 1 10); do
-            screencapture -x "evidence/shots/text-resp-${t}.png" 2>/dev/null || true
+            shot "text-resp-${t}"
             [ $((10#$t % 3)) -eq 0 ] && echo "resp $t state: '$(app_state)'"
             sleep 5
           done
