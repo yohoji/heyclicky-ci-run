@@ -199,10 +199,12 @@ jobs:
           # and the fed clip both play). May be black if ffmpeg lacks Screen
           # Recording; the frame burst above is the reliable video-only fallback.
           echo "--- avfoundation devices ---"; ffmpeg -hide_banner -f avfoundation -list_devices true -i "" 2>&1 | grep -iE "screen|blackhole" || true
+          # Record to .mkv: Matroska stays playable even if the recorder is cut
+          # off (mp4 needs a clean finalize for its moov atom, which SIGKILL broke).
           ffmpeg -nostdin -y -f avfoundation -capture_cursor 1 -framerate 12 \
-            -i "Capture screen 0:BlackHole 2ch" -t 700 -pix_fmt yuv420p \
-            -c:v libx264 -preset ultrafast -movflags +faststart \
-            evidence/av.mp4 > evidence/av.log 2>&1 &
+            -i "Capture screen 0:BlackHole 2ch" -t 800 -pix_fmt yuv420p \
+            -c:v libx264 -preset ultrafast -c:a aac \
+            evidence/av.mkv > evidence/av.log 2>&1 &
           AVVID=$!
           open "$HOME/HeyClicky.app"
           sleep 18
@@ -390,8 +392,8 @@ jobs:
           kill "$AUD" 2>/dev/null || true
           # Stop the ffmpeg av recorder with SIGINT so it writes a valid mp4.
           kill -INT "$AVVID" 2>/dev/null || true
-          sleep 4; kill -9 "$AVVID" 2>/dev/null || true
-          ls -la evidence/av.mp4 2>/dev/null; echo "--- av.log ---"; tail -5 evidence/av.log 2>/dev/null || true
+          sleep 5; kill -9 "$AVVID" 2>/dev/null || true
+          ls -la evidence/av.mkv 2>/dev/null; echo "--- av.log ---"; tail -5 evidence/av.log 2>/dev/null || true
           kill "$FULLVID" 2>/dev/null || true
           sleep 1
           NF=$(ls /tmp/frames/f_*.png 2>/dev/null | wc -l | tr -d ' ')
