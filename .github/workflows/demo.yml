@@ -403,20 +403,26 @@ jobs:
           let src = CGEventSource(stateID: .hidSystemState)
           // Post a flagsChanged with the given device-independent flags; `key` is
           // the modifier keycode that changed (0x3B=L-Control, 0x3A=L-Option).
-          func flags(_ f: CGEventFlags, _ key: CGKeyCode) {
-              guard let e = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: true) else { return }
+          func flags(_ f: CGEventFlags, _ key: CGKeyCode, _ down: Bool) {
+              guard let e = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: down) else { return }
               e.type = .flagsChanged; e.flags = f; e.post(tap: .cgSessionEventTap)
           }
-          func ctrlTap() { flags(.maskControl, 0x3B); usleep(80_000); flags([], 0x3B) }
+          // One clean Control tap: press (flags=control, keyDown) hold, release
+          // (flags=[], keyUp). 120ms hold is well under the 0.4s max.
+          func ctrlTap() { flags(.maskControl, 0x3B, true); usleep(120_000); flags([], 0x3B, false) }
           let mode = CommandLine.arguments.dropFirst().first ?? "double"
           switch mode {
           case "double":                              // control double-tap -> text mode
-              flags([], 0x3B); usleep(120_000)
-              ctrlTap(); usleep(160_000); ctrlTap()
+              // Two taps 220ms apart (< 0.5s window), the whole double-tap gesture
+              // repeated 3x in case one tap is dropped.
+              for _ in 0..<3 {
+                  ctrlTap(); usleep(220_000); ctrlTap()
+                  usleep(600_000)
+              }
           case "hold":                                // control+option hold -> voice listen
-              flags(.maskControl, 0x3B); usleep(60_000)
-              flags([.maskControl, .maskAlternate], 0x3A); usleep(3_500_000)
-              flags(.maskControl, 0x3A); usleep(60_000); flags([], 0x3B)
+              flags(.maskControl, 0x3B, true); usleep(60_000)
+              flags([.maskControl, .maskAlternate], 0x3A, true); usleep(3_500_000)
+              flags(.maskControl, 0x3A, false); usleep(60_000); flags([], 0x3B, false)
           default: break
           }
           SWIFT
@@ -480,6 +486,16 @@ jobs:
         if: always()
         run: |
           log show --predicate 'subsystem == "com.humansongs.clicky"' --last 6m --info --debug > evidence/oslog.txt 2>&1 || true
+          # Dump the app's persisted config to reveal the ACTUAL text-trigger
+          # shortcut binding + whether it is enabled (the double-tap fire gate).
+          echo "=== defaults read com.humansongs.clicky ===" > evidence/app_defaults.txt
+          defaults read com.humansongs.clicky >> evidence/app_defaults.txt 2>&1 || true
+          echo "=== hotkey/trigger keys ===" >> evidence/app_defaults.txt
+          defaults read com.humansongs.clicky 2>/dev/null | grep -iE "trigger|hotkey|shortcut|doubleTap|voiceHold|control|combo|modifier" >> evidence/app_defaults.txt 2>&1 || true
+          echo "=== app support / prefs files ===" >> evidence/app_defaults.txt
+          ls -la "$HOME/Library/Application Support/HeyClicky" 2>/dev/null >> evidence/app_defaults.txt || true
+          ls -la "$HOME/Library/Application Support/com.humansongs.clicky" 2>/dev/null >> evidence/app_defaults.txt || true
+          ls -la "$HOME/Library/Preferences/com.humansongs.clicky.plist" 2>/dev/null >> evidence/app_defaults.txt || true
           pkill -f HeyClicky.app || true
 
       - name: Upload
