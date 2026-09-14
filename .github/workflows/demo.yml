@@ -369,10 +369,11 @@ jobs:
           screencapture -x evidence/shots/demo-04.png 2>/dev/null || true
           circle_ask; cont
 
-          # Step 5 — type / text trigger: double-tap CONTROL (not Ctrl+Option) to
-          # toggle text input.
+          # Step 5 — the demo just TEACHES the "tap Control twice" gesture. Do NOT
+          # press it here: Control-twice is also the macOS Dictation shortcut and
+          # its system prompt would block the demo. Just Continue past it (we
+          # demonstrate the real text trigger after the demo, below).
           screencapture -x evidence/shots/demo-05.png 2>/dev/null || true
-          cliclick kd:ctrl ku:ctrl kd:ctrl ku:ctrl || true
           cont
 
           # Step 6 — dictation.
@@ -395,6 +396,16 @@ jobs:
           kill "$AUD" 2>/dev/null || true
           sleep 2
           echo "double-tapping Control to toggle text input"
+          cliclick kd:ctrl ku:ctrl kd:ctrl ku:ctrl || true
+          sleep 2
+          screencapture -x evidence/shots/text-00-dictation.png 2>/dev/null || true
+          # macOS pops its own 'Enable Dictation?' prompt (Control-twice is the OS
+          # dictation shortcut). Dismiss it so the gesture reaches HeyClicky.
+          cliclick c:428,289 || true      # "Don't Ask Again"
+          sleep 1
+          cliclick c:600,289 || true      # "Not Now" (harmless if already gone)
+          sleep 2
+          # Now double-tap Control again -> HeyClicky's own text input.
           cliclick kd:ctrl ku:ctrl kd:ctrl ku:ctrl || true
           sleep 3
           screencapture -x evidence/shots/text-01-open.png 2>/dev/null || true
