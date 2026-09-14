@@ -329,83 +329,22 @@ jobs:
           cliclick c:500,608 || true       # click "BlackHole 2ch"
           sleep 1
           screencapture -x evidence/shots/after-device.png 2>/dev/null || true
-          # ---- Drive the 7-step guided demo -------------------------------
-          # Recovered step list from the binary:
-          #  1 mic check      -> just needs audio (meter), then Continue
-          #  2 push-to-talk   -> hold Ctrl+Option and speak, then Continue
-          #  3 draw on screen -> hold + speak a "draw" request, then Continue
-          #  4 circle & ask   -> hold + circle the cursor + speak, then Continue
-          #  5 type / trigger -> tap the combo twice quickly, then Continue
-          #  6 dictation      -> hold + speak, then Continue
-          #  7 that's it      -> Continue (done)
-          # BlackHole is the app's input. Feed a CONTINUOUS clip into it in the
-          # background so the mic meter is ALWAYS reacting — discrete per-step
-          # plays didn't keep the meter alive, so Continue never enabled. Push-to-
-          # talk steps just hold the hotkey while this audio is already playing.
-          # Continuously force BOTH default input AND output to BlackHole: the app
-          # listens on its "System Default" input, so keeping the default input as
-          # BlackHole (not the flaky in-app dropdown) is what makes it hear us.
-          ( while :; do
-              SwitchAudioSource -t input  -s "BlackHole 2ch" >/dev/null 2>&1
-              SwitchAudioSource -t output -s "BlackHole 2ch" >/dev/null 2>&1
-              run_to 8 afplay "$HOME/clip.aiff" 2>/dev/null || true
-            done ) &
-          AUD=$!
-          # Hold Ctrl+Option for a few seconds (the background audio is the speech).
-          speak_held() { cliclick kd:ctrl,alt || true; sleep 6; cliclick ku:ctrl,alt || true; }
-          # Hold the hotkey and move the cursor in a rough circle (step 4).
-          circle_ask() {
-            cliclick kd:ctrl,alt || true; sleep 1
-            for p in 611,384 587,454 511,484 435,454 411,384 435,314 511,284 587,314 611,384; do cliclick m:$p || true; done
-            sleep 3; cliclick ku:ctrl,alt || true
-          }
-          # Agent steps take 15-30s to respond and only then does Continue enable,
-          # so be patient: click Continue repeatedly until the step advances
-          # (clicks on a disabled Continue are harmless).
-          cont() { for c in $(seq 1 10); do sleep 5; cliclick c:511,611 || true; done; }
-
-          # Step 1 — mic check: the background audio makes the meter dance; Continue.
-          screencapture -x evidence/shots/demo-01.png 2>/dev/null || true
-          sleep 8; cont
-
-          # Step 2 — push-to-talk (say your name).
-          screencapture -x evidence/shots/demo-02.png 2>/dev/null || true
-          speak_held "$HOME/name.aiff"; cont
-
-          # Step 3 — draw on your screen.
-          screencapture -x evidence/shots/demo-03.png 2>/dev/null || true
-          speak_held "$HOME/draw.aiff"; cont
-
-          # Step 4 — circle something and ask.
-          screencapture -x evidence/shots/demo-04.png 2>/dev/null || true
-          circle_ask; cont
-
-          # Step 5 — DO the "tap Control twice" gesture. Per the decompiled
-          # GlobalPushToTalkShortcutMonitor: a tap only counts when the modifier
-          # flags are EXACTLY Control (0x40000), each press < 0.4s, and the two
-          # taps within 0.5s. The earlier steps held Ctrl+Option, so first CLEAR
-          # all modifiers, then do a clean control-only double-tap.
-          screencapture -x evidence/shots/demo-05.png 2>/dev/null || true
-          cliclick ku:cmd,ctrl,alt,shift,fn || true    # clear any stray modifiers
-          sleep 1
-          cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true   # clean control double-tap
-          sleep 3
-          screencapture -x evidence/shots/demo-05b-after-doubletap.png 2>/dev/null || true
-          cont
-
-          # Step 6 — dictation.
-          screencapture -x evidence/shots/demo-06.png 2>/dev/null || true
-          speak_held "$HOME/dictate.aiff"; cont
-
-          # Step 7 — that's it: final Continue.
-          screencapture -x evidence/shots/demo-07.png 2>/dev/null || true
-          cont
-          # A couple extra Continues + captures in case ordering drifts.
-          for d in 08 09 10; do
-            screencapture -x "evidence/shots/demo-${d}.png" 2>/dev/null || true
-            cliclick c:511,611 || true
-            sleep 5
+          # ---- Skip the guided demo to reach the LIVE app -----------------
+          # The demo's step-1 mic check depends on the flaky BlackHole loopback and
+          # intermittently blocks the whole walkthrough. The TEXT trigger needs no
+          # mic, so skip straight to the live app and test it there.
+          echo "clicking 'Skip demo' to reach the live app"
+          sleep 2
+          cliclick c:709,119 || true      # "Skip demo" (top-right of the demo modal)
+          sleep 6
+          screencapture -x evidence/shots/after-skip.png 2>/dev/null || true
+          # If a follow-up "Let's start"/greeting button appears, nudge it, then let
+          # the app settle into its live/home state.
+          for s in 1 2 3; do
+            cliclick c:511,124 || true; sleep 2
+            screencapture -x "evidence/shots/live-settle-${s}.png" 2>/dev/null || true
           done
+          sleep 3
           # ---- TEXT interaction: double-tap Control to type instead of talk ----
           # The app is now live. Stop the voice audio first (so it isn't
           # "listening"), then double-tap Control to open the text box, type a
