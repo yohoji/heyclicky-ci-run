@@ -44,6 +44,17 @@ jobs:
           sudo killall coreaudiod 2>/dev/null || true
           sleep 5
           echo "--- audio devices ---"; SwitchAudioSource -a || true
+          # ---- Disable the macOS "press Control twice" Dictation shortcut ----
+          # Control-twice is HeyClicky's text trigger, but macOS claims it for
+          # Dictation and pops a system prompt that steals the gesture. Turn the
+          # OS dictation shortcut/feature off (before the app launches) so the
+          # Control-twice reaches HeyClicky instead.
+          defaults write com.apple.HIToolbox AppleDictationAutoEnable -bool false 2>/dev/null || true
+          defaults write com.apple.assistant.support "Dictation Enabled" -bool false 2>/dev/null || true
+          defaults write com.apple.speech.recognition.AppleSpeechRecognition.prefs DictationIMMasterDictationEnabled -bool false 2>/dev/null || true
+          # Dictation "key identifier" 0 = no double-press shortcut.
+          defaults write com.apple.HIToolbox AppleDictationKeyIdentifier -int 0 2>/dev/null || true
+          killall cfprefsd 2>/dev/null || true
           # One clip per demo step's spoken interaction.
           say -o "$HOME/clip.aiff"    "Testing, testing, one two three. Hey Clicky, can you hear me now?" || true
           say -o "$HOME/name.aiff"    "Hi, my name is Yohoji." || true
@@ -395,18 +406,18 @@ jobs:
           # message, send it, and record the agent's reply.
           kill "$AUD" 2>/dev/null || true
           sleep 2
-          echo "double-tapping Control to toggle text input"
-          cliclick kd:ctrl ku:ctrl kd:ctrl ku:ctrl || true
+          # Double-tap Control with a REAL ~160ms gap between taps so HeyClicky's
+          # detector sees a genuine double-tap (a <50ms machine-gun double press
+          # may not register). The macOS dictation shortcut is disabled above.
+          echo "double-tapping Control (tuned timing) to toggle text input"
+          cliclick kd:ctrl w:40 ku:ctrl w:160 kd:ctrl w:40 ku:ctrl || true
           sleep 2
           screencapture -x evidence/shots/text-00-dictation.png 2>/dev/null || true
-          # macOS pops its own 'Enable Dictation?' prompt (Control-twice is the OS
-          # dictation shortcut). Dismiss it so the gesture reaches HeyClicky.
-          cliclick c:428,289 || true      # "Don't Ask Again"
+          # Belt-and-suspenders: if a macOS dictation prompt still appeared, dismiss
+          # it and re-issue the gesture.
+          cliclick c:428,289 || true      # "Don't Ask Again" (harmless if absent)
           sleep 1
-          cliclick c:600,289 || true      # "Not Now" (harmless if already gone)
-          sleep 2
-          # Now double-tap Control again -> HeyClicky's own text input.
-          cliclick kd:ctrl ku:ctrl kd:ctrl ku:ctrl || true
+          cliclick kd:ctrl w:40 ku:ctrl w:160 kd:ctrl w:40 ku:ctrl || true
           sleep 3
           screencapture -x evidence/shots/text-01-open.png 2>/dev/null || true
           echo "typing a message"
