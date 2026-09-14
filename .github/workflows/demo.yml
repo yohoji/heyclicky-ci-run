@@ -349,6 +349,12 @@ jobs:
           for i in $(seq 1 70); do    # ~8 min backstop
             st=$(app_state); echo "reach-live iter $i: reason='${st}'"
             case "$st" in
+              *ostOnboarding*|*uietPeriod*)
+                # postOnboardingQuietPeriod = onboarding is DONE, app is settling.
+                # Do NOT keep clicking (that dismisses the live orb); just count it
+                # as live and move on to the text test.
+                LIVE=$((LIVE+1))
+                if [ "$LIVE" -ge 2 ]; then echo "onboarding complete (quiet) -> LIVE"; break; fi ;;
               *ermission*|*nboarding*|*ntroActive*|*ideoActive*|*utorial*)
                 # Still in an onboarding phase -> act to advance it.
                 LIVE=0
@@ -381,19 +387,43 @@ jobs:
           sleep 3
           screencapture -x evidence/shots/live-home.png 2>/dev/null || true
           # ---- TEXT interaction: double-tap Control to type instead of talk ----
-          # The app should now be LIVE (onboarding skipped), so the control-double-
-          # tap text trigger is armed. Per the decompiled GlobalPushToTalkShortcut
-          # Monitor the tap only counts when the modifier flags are EXACTLY Control
-          # (0x40000), each press < 0.4s, and the two taps land within 0.5s. Clear
-          # every stray modifier first, then do a clean control-only double-tap.
+          # THE fix: the decompiled GlobalPushToTalkShortcutMonitor detects the
+          # control double-tap ONLY inside its `type == 0xc` (kCGEventFlagsChanged)
+          # branch — it reads previousDeviceIndependentFlagsAfterFlagsChanged.
+          # cliclick's `kd:ctrl` posts a keyDown (type 10) of the control KEYCODE,
+          # which routes to a different branch and is NEVER seen as a modifier
+          # change, so no double-tap this whole time actually reached the detector.
+          # Post REAL flagsChanged events for Control via CGEvent instead: flags =
+          # .maskControl (0x40000) on press, [] on release, keycode 0x3B, at the
+          # session tap (the monitor is a kCGSessionEventTap). Timing per the
+          # decompiled thresholds: each hold < 0.4s, gap between taps < 0.5s.
+          cat > /tmp/ctrl_tap.swift <<'SWIFT'
+          import CoreGraphics
+          import Foundation
+          let src = CGEventSource(stateID: .hidSystemState)
+          func emitFlags(_ f: CGEventFlags) {
+              guard let e = CGEvent(keyboardEventSource: src, virtualKey: 0x3B,
+                                    keyDown: f.contains(.maskControl)) else { return }
+              e.type = .flagsChanged          // real Control press/release = flagsChanged
+              e.flags = f                     // .maskControl on press, [] on release
+              e.post(tap: .cgSessionEventTap)
+          }
+          func tapControl() {
+              emitFlags(.maskControl)          // control down
+              usleep(80_000)                   // 80ms hold  (< 0.4s)
+              emitFlags([])                    // control up (all device-independent flags cleared)
+          }
+          emitFlags([]); usleep(120_000)       // clear any residual modifier state
+          tapControl()
+          usleep(160_000)                      // 160ms between taps (< 0.5s)
+          tapControl()
+          SWIFT
           echo "app state before text trigger: '$(app_state)'"
-          # Do the clean double-tap up to 3 times, capturing after each so we catch
-          # the input box whenever it opens (also dismiss any macOS dictation prompt
-          # that a Control double-tap can raise).
+          # Fire the real flagsChanged double-tap up to 3 times, capturing after
+          # each so we catch the input box whenever it opens (also dismiss any macOS
+          # dictation prompt a Control double-tap can raise).
           for a in 1 2 3; do
-            cliclick ku:cmd,ctrl,alt,shift,fn || true      # clear stray modifiers
-            sleep 1
-            cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
+            swift /tmp/ctrl_tap.swift || true
             sleep 2
             screencapture -x "evidence/shots/text-00-attempt-${a}.png" 2>/dev/null || true
             cliclick c:428,289 || true      # "Don't Ask Again" on dictation prompt (harmless if absent)
