@@ -380,12 +380,15 @@ jobs:
           screencapture -x evidence/shots/demo-04.png 2>/dev/null || true
           circle_ask; cont
 
-          # Step 5 — DO the "tap Control twice" gesture here (the macOS Dictation
-          # shortcut is disabled at setup, so it no longer conflicts). Tuned ~160ms
-          # gap so HeyClicky registers a genuine double-tap. This both triggers the
-          # text feature and lets the step advance.
+          # Step 5 — DO the "tap Control twice" gesture. Per the decompiled
+          # GlobalPushToTalkShortcutMonitor: a tap only counts when the modifier
+          # flags are EXACTLY Control (0x40000), each press < 0.4s, and the two
+          # taps within 0.5s. The earlier steps held Ctrl+Option, so first CLEAR
+          # all modifiers, then do a clean control-only double-tap.
           screencapture -x evidence/shots/demo-05.png 2>/dev/null || true
-          cliclick kd:ctrl w:40 ku:ctrl w:160 kd:ctrl w:40 ku:ctrl || true
+          cliclick ku:cmd,ctrl,alt,shift,fn || true    # clear any stray modifiers
+          sleep 1
+          cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true   # clean control double-tap
           sleep 3
           screencapture -x evidence/shots/demo-05b-after-doubletap.png 2>/dev/null || true
           cont
@@ -409,18 +412,20 @@ jobs:
           # message, send it, and record the agent's reply.
           kill "$AUD" 2>/dev/null || true
           sleep 2
-          # Double-tap Control with a REAL ~160ms gap between taps so HeyClicky's
-          # detector sees a genuine double-tap (a <50ms machine-gun double press
-          # may not register). The macOS dictation shortcut is disabled above.
-          echo "double-tapping Control (tuned timing) to toggle text input"
-          cliclick kd:ctrl w:40 ku:ctrl w:160 kd:ctrl w:40 ku:ctrl || true
+          # Clean control-only double-tap per the decompiled monitor: clear all
+          # modifiers first (0.4s hold max, 0.5s between taps, Control-only).
+          echo "clean control double-tap to toggle text input"
+          cliclick ku:cmd,ctrl,alt,shift,fn || true
+          sleep 1
+          cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
           sleep 2
           screencapture -x evidence/shots/text-00-dictation.png 2>/dev/null || true
-          # Belt-and-suspenders: if a macOS dictation prompt still appeared, dismiss
-          # it and re-issue the gesture.
+          # Belt-and-suspenders: dismiss any lingering macOS dictation prompt, retry.
           cliclick c:428,289 || true      # "Don't Ask Again" (harmless if absent)
           sleep 1
-          cliclick kd:ctrl w:40 ku:ctrl w:160 kd:ctrl w:40 ku:ctrl || true
+          cliclick ku:cmd,ctrl,alt,shift,fn || true
+          sleep 1
+          cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
           sleep 3
           screencapture -x evidence/shots/text-01-open.png 2>/dev/null || true
           echo "typing a message"
