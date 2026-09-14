@@ -471,6 +471,15 @@ jobs:
           PY
           shot() { screencapture -x "evidence/shots/$1.png" 2>/dev/null || true; }
           shot diag-00-home
+          # The app opens System Settings during its permission flow; it steals
+          # focus and covers the notch. Quit it and bring HeyClicky forward so the
+          # text composer can appear and receive focus.
+          osascript -e 'tell application "System Settings" to quit' 2>/dev/null || true
+          killall "System Settings" 2>/dev/null || true
+          sleep 2
+          osascript -e 'tell application "HeyClicky" to activate' 2>/dev/null || true
+          sleep 1
+          shot diag-00b-settings-closed
           # Sanity: confirm our synthetic modifier events reach the monitor
           # (control+option hold -> listening). Then release/settle.
           swift /tmp/keys.swift hold || true; sleep 1
@@ -485,6 +494,7 @@ jobs:
           for pair in "60 120" "100 180" "150 250" "200 300" "250 350" "300 200" "80 400"; do
             set -- $pair; HOLD=$1; GAP=$2
             n=$((n+1))
+            killall "System Settings" 2>/dev/null || true   # keep it from covering the notch
             echo "double-tap sweep #$n: hold=${HOLD}ms gap=${GAP}ms  state='$(app_state)'"
             swift /tmp/keys.swift double "$HOLD" "$GAP" || true
             sleep 2
