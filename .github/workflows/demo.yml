@@ -228,6 +228,24 @@ jobs:
           defaults write com.humansongs.clicky hasCompletedOnboarding -bool true 2>/dev/null || true
           defaults write com.humansongs.clicky "clicky.upgrade.skipOnboardingVideo.v1" -bool true 2>/dev/null || true
           defaults write com.humansongs.clicky skipOnboardingVideo -bool true 2>/dev/null || true
+          # Explicitly BIND the text trigger to a clean control double-tap before
+          # launch (its default may be unset, which would leave the fire-gate at
+          # offset 0x2b == 0). Shortcut schema recovered from the binary:
+          # {"triggerKind":"doubleTapModifier","keyCode":N,"modifierMaskRawValue":M}
+          # control keycode = 59, control mask = 0x40000 = 262144. The value is a
+          # JSON Data blob (same shape as the persisted handsFreeDictation key).
+          mkdir -p "$HOME/Library/Preferences"
+          python3 - <<'PY' || true
+          import plistlib, os
+          p = os.path.expanduser('~/Library/Preferences/com.humansongs.clicky.plist')
+          try:
+              d = plistlib.load(open(p, 'rb'))
+          except Exception:
+              d = {}
+          d['clicky.hotkeys.textTrigger.v1'] = b'{"triggerKind":"doubleTapModifier","keyCode":59,"modifierMaskRawValue":262144}'
+          plistlib.dump(d, open(p, 'wb'))
+          print('pre-seeded textTrigger.v1 =', d['clicky.hotkeys.textTrigger.v1'])
+          PY
           killall cfprefsd 2>/dev/null || true
           open "$HOME/HeyClicky.app"
           sleep 18
@@ -492,6 +510,18 @@ jobs:
           defaults read com.humansongs.clicky >> evidence/app_defaults.txt 2>&1 || true
           echo "=== hotkey/trigger keys ===" >> evidence/app_defaults.txt
           defaults read com.humansongs.clicky 2>/dev/null | grep -iE "trigger|hotkey|shortcut|doubleTap|voiceHold|control|combo|modifier" >> evidence/app_defaults.txt 2>&1 || true
+          echo "=== DECODED hotkey shortcut JSON blobs ===" >> evidence/app_defaults.txt
+          python3 - >> evidence/app_defaults.txt 2>&1 <<'PY' || true
+          import plistlib, os
+          p = os.path.expanduser('~/Library/Preferences/com.humansongs.clicky.plist')
+          try:
+              d = plistlib.load(open(p, 'rb'))
+          except Exception as e:
+              print('no plist:', e); raise SystemExit
+          for k, v in sorted(d.items()):
+              if any(t in k.lower() for t in ('hotkey', 'trigger', 'shortcut', 'voicehold', 'dictation')):
+                  print(k, '=>', v.decode('utf-8', 'replace') if isinstance(v, (bytes, bytearray)) else v)
+          PY
           echo "=== app support / prefs files ===" >> evidence/app_defaults.txt
           ls -la "$HOME/Library/Application Support/HeyClicky" 2>/dev/null >> evidence/app_defaults.txt || true
           ls -la "$HOME/Library/Application Support/com.humansongs.clicky" 2>/dev/null >> evidence/app_defaults.txt || true
