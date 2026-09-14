@@ -68,14 +68,21 @@ jobs:
           set -euo pipefail
           URL="${{ github.event.inputs.dmg_url }}"
           if [ -z "$URL" ]; then
-            curl -fsSL https://farzaa.github.io/clicky-releases/appcast.xml -o appcast.xml
-            URL=$(grep -oE 'url="https://[^"]+\.dmg"' appcast.xml | head -1 | sed 's/url="//; s/"$//')
+            # PIN to 1.0.48 — the exact build our decompilation (hc_arm64.macho)
+            # is from. The appcast's first entry is now 1.0.50, and Sparkle would
+            # otherwise auto-update mid-run, changing behavior/offsets from what we
+            # analyzed. Never take "latest".
+            URL="https://github.com/farzaa/clicky-releases/releases/download/v1.0.48/HeyClicky.dmg"
           fi
+          echo "fetching pinned build: $URL"
           curl -fL "$URL" -o HeyClicky.dmg
           MP=$(mktemp -d); hdiutil attach HeyClicky.dmg -nobrowse -mountpoint "$MP"
           cp -R "$(find "$MP" -maxdepth 1 -name '*.app' | head -1)" "$HOME/HeyClicky.app"
           hdiutil detach "$MP" || true
           xattr -dr com.apple.quarantine "$HOME/HeyClicky.app" || true
+          echo "=== bundle version (must be 1.0.48) ==="
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$HOME/HeyClicky.app/Contents/Info.plist" 2>/dev/null || \
+            defaults read "$HOME/HeyClicky.app/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || true
 
       - name: Launch, sign in, drive to Allow, observe
         env:
@@ -228,6 +235,12 @@ jobs:
           defaults write com.humansongs.clicky hasCompletedOnboarding -bool true 2>/dev/null || true
           defaults write com.humansongs.clicky "clicky.upgrade.skipOnboardingVideo.v1" -bool true 2>/dev/null || true
           defaults write com.humansongs.clicky skipOnboardingVideo -bool true 2>/dev/null || true
+          # DISABLE Sparkle auto-update so the pinned 1.0.48 build cannot silently
+          # update to 1.0.50 mid-run (which would diverge from our decompilation).
+          defaults write com.humansongs.clicky SUEnableAutomaticChecks -bool false 2>/dev/null || true
+          defaults write com.humansongs.clicky SUAutomaticallyUpdate -bool false 2>/dev/null || true
+          defaults write com.humansongs.clicky SUScheduledCheckInterval -int 0 2>/dev/null || true
+          defaults write com.humansongs.clicky SUHasLaunchedBefore -bool true 2>/dev/null || true
           # Explicitly BIND the text trigger to a clean control double-tap before
           # launch (its default may be unset, which would leave the fire-gate at
           # offset 0x2b == 0). Shortcut schema recovered from the binary:
@@ -425,18 +438,20 @@ jobs:
               guard let e = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: down) else { return }
               e.type = .flagsChanged; e.flags = f; e.post(tap: .cgSessionEventTap)
           }
-          // One clean Control tap: press (flags=control, keyDown) hold, release
-          // (flags=[], keyUp). 120ms hold is well under the 0.4s max.
-          func ctrlTap() { flags(.maskControl, 0x3B, true); usleep(120_000); flags([], 0x3B, false) }
-          let mode = CommandLine.arguments.dropFirst().first ?? "double"
+          // One clean Control tap with a given hold (ms): press (flags=control),
+          // hold, release (flags=[]).
+          func ctrlTap(_ holdMs: UInt32) {
+              flags(.maskControl, 0x3B, true); usleep(holdMs * 1000); flags([], 0x3B, false)
+          }
+          let args = Array(CommandLine.arguments.dropFirst())
+          let mode = args.first ?? "double"
           switch mode {
           case "double":                              // control double-tap -> text mode
-              // Two taps 220ms apart (< 0.5s window), the whole double-tap gesture
-              // repeated 3x in case one tap is dropped.
-              for _ in 0..<3 {
-                  ctrlTap(); usleep(220_000); ctrlTap()
-                  usleep(600_000)
-              }
+              // Parametric: `double <holdMs> <gapMs>` (defaults 120/220). The gap is
+              // the delay between tap1 release and tap2 press; must be < 0.5s.
+              let holdMs = UInt32(args.count > 1 ? args[1] : "") ?? 120
+              let gapMs  = UInt32(args.count > 2 ? args[2] : "") ?? 220
+              ctrlTap(holdMs); usleep(gapMs * 1000); ctrlTap(holdMs)
           case "hold":                                // control+option hold -> voice listen
               flags(.maskControl, 0x3B, true); usleep(60_000)
               flags([.maskControl, .maskAlternate], 0x3A, true); usleep(3_500_000)
@@ -445,34 +460,42 @@ jobs:
           }
           SWIFT
           echo "app state before battery: '$(app_state)'"
+          echo "=== persisted textTrigger config at runtime ==="
+          python3 - <<'PY' || true
+          import plistlib, os
+          try:
+              d = plistlib.load(open(os.path.expanduser('~/Library/Preferences/com.humansongs.clicky.plist'),'rb'))
+              v = d.get('clicky.hotkeys.textTrigger.v1')
+              print('textTrigger =', v.decode() if isinstance(v,(bytes,bytearray)) else v)
+          except Exception as e: print('read err', e)
+          PY
           shot() { screencapture -x "evidence/shots/$1.png" 2>/dev/null || true; }
           shot diag-00-home
-          # A) Keyboard reachability: click the panel Search box and type — if text
-          #    appears there, synthetic key events reach the app.
-          cliclick c:150,139 || true; sleep 1
-          cliclick t:"reachtest" || true; sleep 1
-          shot diag-01-searchtype
-          cliclick c:150,139 || true; cliclick kp:esc || true; sleep 1   # clear search
-          # B) Voice hold (control+option) — does the pill switch to "listening"?
-          #    Confirms our modifier events reach the shortcut monitor.
+          # Sanity: confirm our synthetic modifier events reach the monitor
+          # (control+option hold -> listening). Then release/settle.
           swift /tmp/keys.swift hold || true; sleep 1
-          shot diag-02-voicehold
-          # C) Control double-tap while the notch is EXPANDED (as before).
-          swift /tmp/keys.swift double || true; sleep 2
-          shot diag-03-double-expanded
-          # D) COLLAPSE the notch (close button top-right of the panel), then
-          #    double-tap — text mode may require the collapsed/idle notch.
-          cliclick c:968,79 || true; sleep 2
-          shot diag-04-collapsed
-          swift /tmp/keys.swift double || true; sleep 2
-          shot diag-05-double-collapsed
-          # E) Click the greeting pill (the composer affordance), then double-tap.
-          cliclick c:665,418 || true; sleep 1
-          shot diag-06-pill
-          swift /tmp/keys.swift double || true; sleep 2
-          shot diag-07-double-after-pill
-          # Now TYPE the message and send it (whichever path opened a field will
-          # receive it), then capture the reply.
+          shot diag-01-voicehold
+          cliclick kp:esc || true; sleep 2
+          # ---- TIMING SWEEP of the control double-tap --------------------
+          # Config is now correctly bound to a control-only double-tap. The hold
+          # works, so the only remaining variable is the tap timing: two fast
+          # down/up flag changes may be coalesced. Sweep hold(ms)/gap(ms) pairs and
+          # screenshot after each so we can see which timing fires the composer.
+          n=0
+          for pair in "60 120" "100 180" "150 250" "200 300" "250 350" "300 200" "80 400"; do
+            set -- $pair; HOLD=$1; GAP=$2
+            n=$((n+1))
+            echo "double-tap sweep #$n: hold=${HOLD}ms gap=${GAP}ms  state='$(app_state)'"
+            swift /tmp/keys.swift double "$HOLD" "$GAP" || true
+            sleep 2
+            shot "$(printf 'sweep-%02d-h%s-g%s' "$n" "$HOLD" "$GAP")"
+            # If a composer opened, typing lands in it — try a short probe then esc
+            # so a later pair still gets a clean shot if this one missed.
+            cliclick c:428,289 || true   # dismiss any macOS dictation prompt
+            sleep 1
+          done
+          shot text-01-open
+          # Whichever pair opened a field, type the real message and send it.
           echo "typing the message"
           cliclick t:"Hey Clicky, what is on my screen right now?" || true
           sleep 2
