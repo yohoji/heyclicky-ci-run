@@ -254,7 +254,7 @@ jobs:
           advanced=0
           noneStreak=0
           lastXY=""
-          for i in $(seq 1 60); do
+          for i in $(seq 1 80); do
             screencapture -x /tmp/cur.png 2>/dev/null || true
             R=$(swift /tmp/find_target.swift /tmp/cur.png classify 2>/dev/null || echo none)
             MODE="${R%% *}"; XY="${R#* }"
@@ -281,12 +281,18 @@ jobs:
                 fi ;;
             esac
             screencapture -x "evidence/shots/onboard-$(printf %02d "$i").png" 2>/dev/null || true
-            # Onboarding is complete once we've advanced through all ~8 screens
-            # (survey, color, greeting, Let's start, Grant Mic, mic Allow, Grant
-            # Access, bypass Allow, Meet HeyClicky), or Safari opened, or the card
-            # is gone for a couple of iterations. Stopping at advanced>=8 keeps the
-            # loop from ever touching the tutorial video / notification banners.
-            if [ "$done_onboard" = 1 ] || [ "$advanced" -ge 8 ] || { [ "$advanced" -ge 6 ] && [ "$noneStreak" -ge 3 ]; }; then
+            # Complete onboarding by SCREEN STATE, not a click-count budget. The old
+            # `advanced>=8` cap broke the loop one iteration too early: it clicked
+            # "Allow" on the screen-recording TCC dialog and stopped, never looping
+            # back to re-click "Grant Access" so the app could re-verify and advance
+            # to the next screen — leaving it frozen on "Complete screen access".
+            # Now: only stop on a real done signal. Whenever a blue button or a
+            # dialog is on screen there is still work to do, so keep going and let
+            # the permission screens (Grant Access -> Allow -> re-verify) resolve.
+            # done = Safari/tutorial opened (browser, once advanced), or the card
+            # has been quiet (mode none) for several straight iterations after we
+            # have clearly progressed. The 80-iter x ~5s cap (~6.5m) is the backstop.
+            if [ "$done_onboard" = 1 ] || { [ "$advanced" -ge 6 ] && [ "$noneStreak" -ge 4 ]; }; then
               echo "onboarding complete after $i iters (advanced=$advanced, mode=$MODE)"; break
             fi
             sleep 4
