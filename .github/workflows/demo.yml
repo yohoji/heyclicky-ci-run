@@ -497,28 +497,30 @@ jobs:
           # monitor sees like real hardware. Two quick `key code 59` = the
           # double-tap that fires textTriggerPressedPublisher -> composer opens
           # (the app logs reason=textInputActive). Retry until the composer is up.
-          ctrl_double_tap() { osascript -e 'tell application "System Events"' -e 'key code 59' -e "delay $1" -e 'key code 59' -e 'end tell' 2>/dev/null || true; }
-          OPENED=0
-          for d in 0.12 0.15 0.2 0.25; do
+          # The composer auto-closes within ~2s, so do the double-tap, wait for it
+          # to appear, then type + Return — ALL in one tight System Events session
+          # (no slow log-check or screenshot in between, which is what let it close
+          # empty last time). Retry a couple of gaps; capture after each.
+          MSG="Hey Clicky, what is on my screen right now?"
+          for d in 0.12 0.16 0.2; do
             killall "System Settings" 2>/dev/null || true
             osascript -e 'tell application "HeyClicky" to activate' 2>/dev/null || true
-            echo "control double-tap (System Events), gap=${d}s  state='$(app_state)'"
-            ctrl_double_tap "$d"
-            sleep 2
-            shot "$(printf 'textopen-g%s' "$d")"
-            if app_state | grep -q "textInputActive"; then OPENED=1; echo "composer OPEN (textInputActive)"; break; fi
+            echo "control double-tap + type + send (System Events), gap=${d}s"
+            osascript \
+              -e 'tell application "System Events"' \
+              -e 'key code 59' -e "delay $d" -e 'key code 59' \
+              -e 'delay 0.6' \
+              -e "keystroke \"$MSG\"" \
+              -e 'delay 0.3' \
+              -e 'key code 36' \
+              -e 'end tell' 2>/dev/null || true
+            sleep 1
+            shot "$(printf 'textsend-g%s' "$d")"
+            st="$(app_state)"; echo "after attempt gap=$d: state='$st'"
+            case "$st" in *textInputActive*|*voiceBusy*) echo "message sent"; break;; esac
+            sleep 1
           done
-          shot text-01-open
-          echo "composer opened: $OPENED"
-          # ---- TYPE the message into the composer and SEND it ------------------
-          # The composer ("ask HeyClicky…") is focused; type via System Events
-          # keystroke (same trusted path), then press Return to send.
-          MSG="Hey Clicky, what is on my screen right now?"
-          osascript -e "tell application \"System Events\" to keystroke \"$MSG\"" 2>/dev/null || cliclick t:"$MSG" || true
-          sleep 2
           shot text-02-typed
-          osascript -e 'tell application "System Events" to key code 36' 2>/dev/null || cliclick kp:return || true   # Return = send
-          echo "state after send: '$(app_state)'"
           # Capture HeyClicky's reply (frames + state logging). Audio (its spoken
           # reply) is recorded via BlackHole in av.mkv.
           for t in $(seq -w 1 12); do
