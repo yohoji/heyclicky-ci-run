@@ -453,8 +453,13 @@ jobs:
           case "double":                              // control double-tap -> text mode
               // Parametric: `double <holdMs> <gapMs>` (defaults 120/220). The gap is
               // the delay between tap1 release and tap2 press; must be < 0.5s.
+              // The runtime monitor (FUN_100a56544) detects tap1's PRESS only when
+              // previousDeviceIndependentFlagsAfterFlagsChanged is EMPTY. Post a
+              // clean control-up (flags=[]) first to force that empty baseline
+              // (harmless: it's not a release unless control was actually down).
               let holdMs = UInt32(args.count > 1 ? args[1] : "") ?? 120
               let gapMs  = UInt32(args.count > 2 ? args[2] : "") ?? 220
+              flags([], 0x3B, false); usleep(90_000)   // baseline: previousFlags = empty
               ctrlTap(holdMs); usleep(gapMs * 1000); ctrlTap(holdMs)
           case "hold":                                // control+option hold -> voice listen
               flags(.maskControl, 0x3B, true); usleep(60_000)
@@ -484,16 +489,13 @@ jobs:
           osascript -e 'tell application "HeyClicky" to activate' 2>/dev/null || true
           sleep 1
           shot diag-00b-settings-closed
-          # Sanity: confirm our synthetic modifier events reach the monitor
-          # (control+option hold -> listening). Then release/settle.
-          swift /tmp/keys.swift hold || true; sleep 1
-          shot diag-01-voicehold
-          cliclick kp:esc || true; sleep 2
-          # ---- TIMING SWEEP of the control double-tap --------------------
-          # Config is now correctly bound to a control-only double-tap. The hold
-          # works, so the only remaining variable is the tap timing: two fast
-          # down/up flag changes may be coalesced. Sweep hold(ms)/gap(ms) pairs and
-          # screenshot after each so we can see which timing fires the composer.
+          # ---- TIMING SWEEP of the control double-tap (FIRST, clean state) ----
+          # Config is bound to a control-only double-tap and the runtime path is
+          # fully mapped. Run the sweep on a CLEAN monitor state (no prior voice
+          # hold to leave controlTapPendingPressStartTime / isTextTriggerCombo /
+          # previousFlags dirty). Each `double` invocation self-resets previousFlags
+          # to empty first. Space pairs by >1s so completedControlTapReleaseTimes
+          # (0.5s window) resets between attempts. Screenshot after each.
           n=0
           for pair in "60 120" "100 180" "150 250" "200 300" "250 350" "300 200" "80 400"; do
             set -- $pair; HOLD=$1; GAP=$2
@@ -503,12 +505,16 @@ jobs:
             swift /tmp/keys.swift double "$HOLD" "$GAP" || true
             sleep 2
             shot "$(printf 'sweep-%02d-h%s-g%s' "$n" "$HOLD" "$GAP")"
-            # If a composer opened, typing lands in it — try a short probe then esc
-            # so a later pair still gets a clean shot if this one missed.
             cliclick c:428,289 || true   # dismiss any macOS dictation prompt
-            sleep 1
+            sleep 2                        # >0.5s so the tap window resets before next pair
           done
           shot text-01-open
+          # Sanity LAST: confirm our synthetic modifier events still reach the
+          # monitor (control+option hold -> listening), so a null sweep result
+          # means "double-tap not recognized", not "events not arriving".
+          swift /tmp/keys.swift hold || true; sleep 1
+          shot diag-01-voicehold
+          cliclick kp:esc || true; sleep 1
           # Whichever pair opened a field, type the real message and send it.
           echo "typing the message"
           cliclick t:"Hey Clicky, what is on my screen right now?" || true
