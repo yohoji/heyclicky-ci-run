@@ -356,9 +356,16 @@ jobs:
           import Foundation
           import AppKit
           import Vision
-          guard CommandLine.arguments.count > 1,
-                let img = NSImage(contentsOfFile: CommandLine.arguments[1]),
-                let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { exit(0) }
+          // Args: <image> [x y w h]  (crop as pixel fractions 0..1). Cropping to the
+          // notch region lets us read the tutorial PROMPT, not the Safari chrome.
+          let a = CommandLine.arguments
+          guard a.count > 1, let img = NSImage(contentsOfFile: a[1]),
+                var cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { exit(0) }
+          if a.count >= 6, let fx = Double(a[2]), let fy = Double(a[3]), let fw = Double(a[4]), let fh = Double(a[5]) {
+            let W = Double(cg.width), H = Double(cg.height)
+            let rect = CGRect(x: fx*W, y: fy*H, width: fw*W, height: fh*H)
+            if let c = cg.cropping(to: rect) { cg = c }
+          }
           let req = VNRecognizeTextRequest { r, _ in
             (r.results as? [VNRecognizedTextObservation])?.forEach { o in
               if let t = o.topCandidates(1).first { print(t.string) }
@@ -370,7 +377,9 @@ jobs:
           SWIFT
           # Pre-compile once (recompiling per call would add ~3s x 100 calls).
           swiftc /tmp/ocr.swift -o /tmp/ocr 2>/dev/null || true
-          ocr() { screencapture -x /tmp/ocr.png 2>/dev/null; { /tmp/ocr /tmp/ocr.png 2>/dev/null || swift /tmp/ocr.swift /tmp/ocr.png 2>/dev/null; } | tr '\n' ' '; }
+          _ocr() { { /tmp/ocr "$@" 2>/dev/null || swift /tmp/ocr.swift "$@" 2>/dev/null; } | tr '\n' ' '; }
+          ocr()       { screencapture -x /tmp/ocr.png 2>/dev/null; _ocr /tmp/ocr.png; }              # whole screen
+          ocr_notch() { screencapture -x /tmp/ocr.png 2>/dev/null; _ocr /tmp/ocr.png 0.26 0.0 0.48 0.22; }  # top-center notch only
           # Keyboard emitter (CGEvent flagsChanged) — used for the voice/draw HOLDS
           # (mode "hold" = control+option held ~3.5s, proven to fire reason=ptt).
           cat > /tmp/keys.swift <<'SWIFT'
@@ -430,45 +439,44 @@ jobs:
             sleep 6
           done
 
-          # 3) Drive the interactive tutorial by reading the notch prompt (OCR).
-          echo "walking the interactive tutorial step by step..."
+          # 3) Drive the guided tutorial. Read the NOTCH PROMPT (cropped OCR) — the
+          # full-screen OCR was reading Safari chrome, not the tour. The blocker
+          # last run was System Settings opening and COVERING the notch, so kill it
+          # at the top of every iteration. Click "Show me" to start; then per the
+          # notch prompt do the right action (text mode = double-tap+type; push-to-
+          # talk/draw/dictation = voice hold; circle = hold+cursor circle); nudge the
+          # notch CTA (top-center) to advance. "Skip demo" (top-right) is avoided.
+          echo "walking the guided tutorial step by step..."
+          notch_cta() { cliclick c:511,75 || true; }   # the notch's primary button (Show me / Continue / Next)
           DONE=0
-          for i in $(seq 1 70); do    # ~8 min backstop
-            st=$(app_state); T="$(ocr)"; Tl=$(printf '%s' "$T" | tr 'A-Z' 'a-z')
-            echo "tutorial iter $i: state='$st' ocr='${T:0:140}'"
+          for i in $(seq 1 80); do    # ~10 min backstop
+            killall "System Settings" 2>/dev/null || true    # keep the notch uncovered
+            osascript -e 'tell application "HeyClicky" to activate' 2>/dev/null || true
+            st=$(app_state); T="$(ocr_notch)"; Tl=$(printf '%s' "$T" | tr 'A-Z' 'a-z')
+            echo "tutorial iter $i: state='$st' notch='${T:0:110}'"
             screencapture -x "evidence/shots/tut-$(printf %02d "$i").png" 2>/dev/null || true
             case "$st" in
-              *ostOnboarding*|*uietPeriod*|"")
+              *ostOnboarding*|*uietPeriod*|*otchExpanded*|"")
                 DONE=$((DONE+1)); if [ "$DONE" -ge 2 ]; then echo "tutorial complete -> LIVE"; break; fi; sleep 4; continue;;
             esac
             DONE=0
-            # PAYWALL: "I am out of juice" / "HeyClicky Pro" blocks the demo when
-            # the account has no credits. Dismiss it (X at top-right of the card)
-            # and record it — a funded account won't hit this; an exhausted one
-            # can't complete the agent steps regardless.
+            # Paywall guard (funded account shouldn't hit it; dismiss if it appears).
+            case "$Tl" in *"out of juice"*|*"heyclicky pro"*|*"save 20"*) cliclick c:733,195 || true;; esac
             case "$Tl" in
-              *"out of juice"*|*"heyclicky pro"*|*"get heyclicky"*|*"save 20"*)
-                echo "PAYWALL detected (account out of juice) — dismissing"
-                cliclick c:733,195 || true; sleep 1
-                cliclick c:733,195 || true ;;
-            esac
-            case "$Tl" in
-              *"show me"*|*"let me show"*|*"look around"*)  cliclick c:511,86 || cliclick c:511,143 || true ;;
+              *"show me"*|*"let me show"*|*"look around"*|*"show you"*)  notch_cta ;;   # start / advance the tour
               *type*|*"text mode"*|*"not in the mood"*)     # TEXT MODE step
-                ctrl_double; sleep 1; se_type "Hey Clicky, what is on my screen right now?"; sleep 1; se_return ;;
-              *dictat*|*"word-for-word"*|*"word for word"*)  voice_hold ;;      # dictation
+                ctrl_double; sleep 1; se_type "Hey Clicky, what is on my screen right now?"; sleep 1; se_return; sleep 2; notch_cta ;;
+              *dictat*|*"word-for-word"*|*"word for word"*)  voice_hold; notch_cta ;;   # dictation
               *circle*|*"ask about"*)                       # circle + ask
                 voice_hold & VH=$!
                 for p in 611,384 587,454 511,484 435,454 411,384 435,314 511,284 587,314 611,384; do cliclick m:$p || true; done
-                wait "$VH" 2>/dev/null || true ;;
-              *draw*)                                       voice_hold ;;       # draw on screen
-              *hold*|*"talk to"*|*"push to talk"*|*"say"*|*hello*|*"your name"*)  voice_hold ;;  # push-to-talk
-              *"hear you"*|*mic*|*microphone*|*sound*|*speaker*|*listening*)  : ;;  # audio already flowing
-              *"that's it"*|*"all set"*|*"you're all"*|*"youre all"*|*done*|*finish*|*"great"*)  cliclick c:511,86 || cliclick c:511,143 || true ;;
-              *) : ;;
+                wait "$VH" 2>/dev/null || true; notch_cta ;;
+              *draw*)                                       voice_hold; notch_cta ;;    # draw on screen
+              *hold*|*"talk to"*|*"push to talk"*|*"say"*|*hello*|*"your name"*)  voice_hold; notch_cta ;;  # push-to-talk
+              *"hear you"*|*mic*|*microphone*|*sound*|*speaker*|*listening*)  notch_cta ;;   # mic/speaker: audio flowing
+              *"that's it"*|*"all set"*|*"you're all"*|*done*|*finish*|*great*|*continue*|*next*|*"got it"*)  notch_cta ;;
+              *) notch_cta ;;   # unknown/blank notch: nudge the CTA to advance
             esac
-            # Always also nudge the notch CTA (Continue / Next / Got it) to advance.
-            notch_continue
             sleep 4
           done
           kill "$AUD" 2>/dev/null || true    # stop the continuous mic feed
