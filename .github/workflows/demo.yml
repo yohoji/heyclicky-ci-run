@@ -20,7 +20,7 @@ on:
 jobs:
   interact:
     runs-on: macos-latest
-    timeout-minutes: 30   # hard cap so a wedged step can never hang for hours
+    timeout-minutes: 45   # the full guided demo (video + 9-step tutorial) is long
     steps:
       - name: Environment
         run: |
@@ -220,21 +220,18 @@ jobs:
           # Record to .mkv: Matroska stays playable even if the recorder is cut
           # off (mp4 needs a clean finalize for its moov atom, which SIGKILL broke).
           ffmpeg -nostdin -y -f avfoundation -capture_cursor 1 -framerate 12 \
-            -i "Capture screen 0:BlackHole 2ch" -t 800 -pix_fmt yuv420p \
+            -i "Capture screen 0:BlackHole 2ch" -t 2400 -pix_fmt yuv420p \
             -c:v libx264 -preset ultrafast -c:a aac \
             evidence/av.mkv > evidence/av.log 2>&1 &
           AVVID=$!
-          # ---- Attempt to BYPASS onboarding via UserDefaults --------------
-          # The binary reads a `hasCompletedOnboarding` key (and a
-          # `clicky.upgrade.skipOnboardingVideo.v1` flag). Each CI run is a fresh
-          # VM with no persisted defaults, so onboarding always runs. If these are
-          # UserDefaults-backed, writing them before launch (with permissions
-          # already pre-granted via TCC) should drop the app straight into its
-          # live home, where the control-double-tap text trigger is armed. Harmless
-          # if the app ignores them (the state-aware driver still handles onboarding).
-          defaults write com.humansongs.clicky hasCompletedOnboarding -bool true 2>/dev/null || true
-          defaults write com.humansongs.clicky "clicky.upgrade.skipOnboardingVideo.v1" -bool true 2>/dev/null || true
-          defaults write com.humansongs.clicky skipOnboardingVideo -bool true 2>/dev/null || true
+          # ---- Onboarding: DO the full guided demo (no bypass) -------------
+          # We deliberately do NOT set hasCompletedOnboarding / skipOnboardingVideo:
+          # the user wants the real guided demo to play — the intro video's synced
+          # auto-demo (research SpaceX competitors -> open the Starship page -> type
+          # "what does this do?" -> prefill an email draft) and the interactive
+          # tutorial (mic -> speaker -> voice -> draw -> circle -> TEXT MODE ->
+          # email -> dictation -> finale). An OCR-driven driver below reads the
+          # notch prompt each step and performs the right action.
           # DISABLE Sparkle auto-update so the pinned 1.0.48 build cannot silently
           # update to 1.0.50 mid-run (which would diverge from our decompilation).
           defaults write com.humansongs.clicky SUEnableAutomaticChecks -bool false 2>/dev/null || true
@@ -345,89 +342,133 @@ jobs:
           # app skips the Accessibility screen and lands on Screen Recording
           # (permission 3 of 3) on its own. Observe which screen we end on.
           echo "--- tcc_write.log ---"; cat evidence/tcc_write.log
-          # ---- Reach the LIVE app -----------------------------------------
-          # KEY INSIGHT from the app's own os_log: it gates ALL hotkeys (including
-          # the control-double-tap text trigger) on onboarding being COMPLETE. The
-          # log reports the exact phase via 'reason=' on the IntegrationSuggestions
-          # sampler line:
-          #   permissionsIncomplete -> onboardingIncomplete ("All set / Meet
-          #   HeyClicky") -> onboardingIntroActive -> onboardingVideoActive ->
-          #   onboardingTutorialEngaged ("Show me" guided tour) -> LIVE (the line
-          #   stops / reason is no longer an onboarding phase).
-          # We may already be LIVE here if the UserDefaults bypass took. Otherwise
-          # drive the sequence to completion: the VIDEO skips via Escape + cursor
-          # SHAKE (decompiled SkipEscapeArmedAt / SkipShake*), but the TUTORIAL does
-          # NOT skip that way — it needs its notch CTA ("Meet HeyClicky" -> "Show
-          # me" -> Continue/Next) clicked, and the mic/speaker steps need audio.
-          # So: feed BlackHole a CONTINUOUS clip (mic meter), route OUTPUT to
-          # BlackHole too (records the app's spoken reply), and each iteration take
-          # every advance action while polling the phase until we leave onboarding.
+          # ---- DO THE FULL GUIDED DEMO (OCR-driven, robust) ----------------
+          # The app gates everything on onboarding COMPLETING. We drive the REAL
+          # demo (no skip): (1) click "Meet HeyClicky"; (2) let the intro video's
+          # synced auto-demo play — HeyClicky researches SpaceX competitors, opens
+          # the Starship page, types "what does this do?", drafts an email; (3)
+          # walk the interactive tutorial (mic -> speaker -> voice -> draw ->
+          # circle -> TEXT MODE -> email -> dictation -> finale). We read the notch
+          # prompt each step with on-device Vision OCR and perform the right action.
+          app_state() { log show --predicate 'subsystem == "com.humansongs.clicky"' --last 25s 2>/dev/null | grep -oE 'reason=[A-Za-z]+' | tail -1; }
+          # Vision OCR helper: print all text it recognises in a screenshot.
+          cat > /tmp/ocr.swift <<'SWIFT'
+          import Foundation
+          import AppKit
+          import Vision
+          guard CommandLine.arguments.count > 1,
+                let img = NSImage(contentsOfFile: CommandLine.arguments[1]),
+                let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { exit(0) }
+          let req = VNRecognizeTextRequest { r, _ in
+            (r.results as? [VNRecognizedTextObservation])?.forEach { o in
+              if let t = o.topCandidates(1).first { print(t.string) }
+            }
+          }
+          req.recognitionLevel = .accurate
+          req.usesLanguageCorrection = true
+          try? VNImageRequestHandler(cgImage: cg, options: [:]).perform([req])
+          SWIFT
+          # Pre-compile once (recompiling per call would add ~3s x 100 calls).
+          swiftc /tmp/ocr.swift -o /tmp/ocr 2>/dev/null || true
+          ocr() { screencapture -x /tmp/ocr.png 2>/dev/null; { /tmp/ocr /tmp/ocr.png 2>/dev/null || swift /tmp/ocr.swift /tmp/ocr.png 2>/dev/null; } | tr '\n' ' '; }
+          # Keyboard emitter (CGEvent flagsChanged) — used for the voice/draw HOLDS
+          # (mode "hold" = control+option held ~3.5s, proven to fire reason=ptt).
+          cat > /tmp/keys.swift <<'SWIFT'
+          import CoreGraphics
+          import Foundation
+          let src = CGEventSource(stateID: .hidSystemState)
+          func flags(_ f: CGEventFlags, _ key: CGKeyCode, _ down: Bool) {
+              guard let e = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: down) else { return }
+              e.type = .flagsChanged; e.flags = f; e.post(tap: .cghidEventTap)
+          }
+          func ctrlTap(_ holdMs: UInt32) { flags(.maskControl, 0x3B, true); usleep(holdMs * 1000); flags([], 0x3B, false) }
+          let args = Array(CommandLine.arguments.dropFirst())
+          switch args.first ?? "double" {
+          case "double":
+              let holdMs = UInt32(args.count > 1 ? args[1] : "") ?? 120
+              let gapMs  = UInt32(args.count > 2 ? args[2] : "") ?? 220
+              flags([], 0x3B, false); usleep(90_000)
+              ctrlTap(holdMs); usleep(gapMs * 1000); ctrlTap(holdMs)
+          case "hold":
+              flags(.maskControl, 0x3B, true); usleep(60_000)
+              flags([.maskControl, .maskAlternate], 0x3A, true); usleep(3_500_000)
+              flags(.maskControl, 0x3A, false); usleep(60_000); flags([], 0x3B, false)
+          default: break
+          }
+          SWIFT
+          # Continuous audio for the mic / speaker / voice / dictation steps.
           SwitchAudioSource -t input  -s "BlackHole 2ch" || true
           SwitchAudioSource -t output -s "BlackHole 2ch" || true
-          ( while :; do
-              SwitchAudioSource -t input  -s "BlackHole 2ch" >/dev/null 2>&1
-              afplay "$HOME/clip.aiff" >/dev/null 2>&1 || true
-            done ) & AUD=$!
-          # Read the most recent onboarding phase from the app log (empty = the
-          # sampler stopped suppressing => onboarding done => live).
-          app_state() { log show --predicate 'subsystem == "com.humansongs.clicky"' --last 25s 2>/dev/null | grep -oE 'reason=[A-Za-z]+' | tail -1; }
-          # Vigorous cursor shake in ONE cliclick call (fast far reversals -> skips
-          # the intro video via the SkipShake* thresholds).
-          SHAKE_PTS=""; for r in $(seq 1 20); do SHAKE_PTS="$SHAKE_PTS m:170,400 m:850,400"; done
-          shake() { cliclick $SHAKE_PTS || true; }
-          echo "initial phase: '$(app_state)'"
-          LIVE=0
-          for i in $(seq 1 70); do    # ~8 min backstop
-            st=$(app_state); echo "reach-live iter $i: reason='${st}'"
+          ( while :; do SwitchAudioSource -t input -s "BlackHole 2ch" >/dev/null 2>&1; afplay "$HOME/clip.aiff" >/dev/null 2>&1 || true; done ) & AUD=$!
+          # Synthesis helpers. Voice/draw HOLDS use the CGEvent path (proven to fire
+          # reason=ptt); the double-tap uses System Events (the ONLY path that opens
+          # the composer). keys.swift hold = control+option held ~3.5s.
+          voice_hold() { swift /tmp/keys.swift hold >/dev/null 2>&1 || true; }
+          ctrl_double() { osascript -e 'tell application "System Events"' -e 'key code 59' -e 'delay 0.12' -e 'key code 59' -e 'end tell' 2>/dev/null || true; }
+          se_type()   { osascript -e "tell application \"System Events\" to keystroke \"$1\"" 2>/dev/null || true; }
+          se_return() { osascript -e 'tell application "System Events" to key code 36' 2>/dev/null || true; }
+          notch_continue() { cliclick c:511,86 || true; sleep 1; cliclick c:511,143 || true; sleep 1; cliclick c:511,611 || true; }
+
+          # 1) Start the demo: click "Meet HeyClicky" until the intro/video/tutorial begins.
+          echo "clicking 'Meet HeyClicky' to start the guided demo..."
+          for k in 1 2 3 4 5 6; do
+            cliclick c:511,143 || true; sleep 3
+            st=$(app_state); echo "meet-heyclicky $k -> '$st'"
+            case "$st" in *ntroActive*|*ideoActive*|*utorial*) break;; esac
+          done
+          screencapture -x evidence/shots/demo-00-intro-start.png 2>/dev/null || true
+
+          # 2) Let the intro video + synced AUTO-DEMO play (DON'T skip). Record it.
+          echo "letting the intro auto-demo play (SpaceX research / Starship / email draft)..."
+          for i in $(seq 1 45); do    # up to ~4.5 min of video+demo
+            st=$(app_state); T="$(ocr)"
+            echo "demo-video iter $i: state='$st' ocr='${T:0:120}'"
+            screencapture -x "evidence/shots/demo-video-$(printf %02d "$i").png" 2>/dev/null || true
             case "$st" in
-              *ostOnboarding*|*uietPeriod*)
-                # postOnboardingQuietPeriod = onboarding is DONE, app is settling.
-                # Do NOT keep clicking (that dismisses the live orb); just count it
-                # as live and move on to the text test.
-                LIVE=$((LIVE+1))
-                if [ "$LIVE" -ge 2 ]; then echo "onboarding complete (quiet) -> LIVE"; break; fi ;;
-              *ermission*|*nboarding*|*ntroActive*|*ideoActive*|*utorial*)
-                # Still in an onboarding phase -> act to advance it.
-                LIVE=0
-                case "$st" in
-                  *ntroActive*|*ideoActive*)
-                    # Intro video: skip via Escape + shake.
-                    cliclick kp:esc || true; sleep 1; shake; cliclick kp:esc || true ;;
-                  *utorial*)
-                    # Guided tour: click the notch CTA (Show me / Continue / Next)
-                    # and a couple of likely advance spots; audio drives mic steps.
-                    cliclick c:511,86  || true; sleep 1     # notch primary CTA
-                    cliclick c:511,143 || true; sleep 1     # lower CTA (Meet/Continue)
-                    cliclick c:511,611 || true ;;           # bottom-center Continue
-                  *)
-                    # permissionsIncomplete / onboardingIncomplete ("Meet HeyClicky"):
-                    # click the pale-blue CTAs to advance.
-                    cliclick c:511,143 || true; sleep 1     # Meet HeyClicky
-                    cliclick c:511,86  || true ;;
-                esac ;;
-              *)
-                # Empty or any non-onboarding reason -> the sampler stopped
-                # suppressing => onboarding done => LIVE (require 2 in a row).
-                LIVE=$((LIVE+1))
-                if [ "$LIVE" -ge 2 ]; then echo "onboarding complete -> LIVE"; break; fi ;;
+              *utorial*|*ostOnboarding*|*uietPeriod*|"") echo "video done -> tutorial/live"; break;;
             esac
-            screencapture -x "evidence/shots/reach-$(printf %02d "$i").png" 2>/dev/null || true
-            sleep 5
+            sleep 6
+          done
+
+          # 3) Drive the interactive tutorial by reading the notch prompt (OCR).
+          echo "walking the interactive tutorial step by step..."
+          DONE=0
+          for i in $(seq 1 70); do    # ~8 min backstop
+            st=$(app_state); T="$(ocr)"; Tl=$(printf '%s' "$T" | tr 'A-Z' 'a-z')
+            echo "tutorial iter $i: state='$st' ocr='${T:0:140}'"
+            screencapture -x "evidence/shots/tut-$(printf %02d "$i").png" 2>/dev/null || true
+            case "$st" in
+              *ostOnboarding*|*uietPeriod*|"")
+                DONE=$((DONE+1)); if [ "$DONE" -ge 2 ]; then echo "tutorial complete -> LIVE"; break; fi; sleep 4; continue;;
+            esac
+            DONE=0
+            case "$Tl" in
+              *"show me"*|*"let me show"*|*"look around"*)  cliclick c:511,86 || cliclick c:511,143 || true ;;
+              *type*|*"text mode"*|*"not in the mood"*)     # TEXT MODE step
+                ctrl_double; sleep 1; se_type "Hey Clicky, what is on my screen right now?"; sleep 1; se_return ;;
+              *dictat*|*"word-for-word"*|*"word for word"*)  voice_hold ;;      # dictation
+              *circle*|*"ask about"*)                       # circle + ask
+                voice_hold & VH=$!
+                for p in 611,384 587,454 511,484 435,454 411,384 435,314 511,284 587,314 611,384; do cliclick m:$p || true; done
+                wait "$VH" 2>/dev/null || true ;;
+              *draw*)                                       voice_hold ;;       # draw on screen
+              *hold*|*"talk to"*|*"push to talk"*|*"say"*|*hello*|*"your name"*)  voice_hold ;;  # push-to-talk
+              *"hear you"*|*mic*|*microphone*|*sound*|*speaker*|*listening*)  : ;;  # audio already flowing
+              *"that's it"*|*"all set"*|*"you're all"*|*"youre all"*|*done*|*finish*|*"great"*)  cliclick c:511,86 || cliclick c:511,143 || true ;;
+              *) : ;;
+            esac
+            # Always also nudge the notch CTA (Continue / Next / Got it) to advance.
+            notch_continue
+            sleep 4
           done
           kill "$AUD" 2>/dev/null || true    # stop the continuous mic feed
           sleep 3
           screencapture -x evidence/shots/live-home.png 2>/dev/null || true
-          # ---- TEXT interaction + DIAGNOSTIC BATTERY -----------------------
-          # We are reliably LIVE now (notchExpanded home, signed in as dryohoji).
-          # A prior run posted REAL flagsChanged Control double-taps (the decompiled
-          # GlobalPushToTalkShortcutMonitor only detects the control double-tap in
-          # its type==0xc / kCGEventFlagsChanged branch), but no composer opened —
-          # likely because the notch was already EXPANDED, or the modifier events
-          # aren't reaching the tap. This battery tests each hypothesis with a
-          # screenshot after every action so we can see exactly which path works.
-          # Keyboard emitter: posts genuine flagsChanged modifier events (keyDown
-          # posts a real keyDown), so we can reproduce hardware Control/Option taps
-          # and holds. Arg selects the gesture.
+          # ---- FINAL clean text-trigger demonstration (on the live app) -------
+          # The guided demo above is done and the app is LIVE. As a clean, isolated
+          # capstone, open the composer with the control double-tap (System Events —
+          # the only path that fires it), type a message, and send it. (keys.swift
+          # is re-created here for the voice-hold sanity check; harmless duplicate.)
           cat > /tmp/keys.swift <<'SWIFT'
           import CoreGraphics
           import Foundation
