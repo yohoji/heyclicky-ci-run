@@ -442,6 +442,16 @@ jobs:
                 DONE=$((DONE+1)); if [ "$DONE" -ge 2 ]; then echo "tutorial complete -> LIVE"; break; fi; sleep 4; continue;;
             esac
             DONE=0
+            # PAYWALL: "I am out of juice" / "HeyClicky Pro" blocks the demo when
+            # the account has no credits. Dismiss it (X at top-right of the card)
+            # and record it — a funded account won't hit this; an exhausted one
+            # can't complete the agent steps regardless.
+            case "$Tl" in
+              *"out of juice"*|*"heyclicky pro"*|*"get heyclicky"*|*"save 20"*)
+                echo "PAYWALL detected (account out of juice) — dismissing"
+                cliclick c:733,195 || true; sleep 1
+                cliclick c:733,195 || true ;;
+            esac
             case "$Tl" in
               *"show me"*|*"let me show"*|*"look around"*)  cliclick c:511,86 || cliclick c:511,143 || true ;;
               *type*|*"text mode"*|*"not in the mood"*)     # TEXT MODE step
