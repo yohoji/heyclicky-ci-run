@@ -489,55 +489,39 @@ jobs:
           osascript -e 'tell application "HeyClicky" to activate' 2>/dev/null || true
           sleep 1
           shot diag-00b-settings-closed
-          # ---- TIMING SWEEP of the control double-tap (FIRST, clean state) ----
-          # Config is bound to a control-only double-tap and the runtime path is
-          # fully mapped. Run the sweep on a CLEAN monitor state (no prior voice
-          # hold to leave controlTapPendingPressStartTime / isTextTriggerCombo /
-          # previousFlags dirty). Each `double` invocation self-resets previousFlags
-          # to empty first. Space pairs by >1s so completedControlTapReleaseTimes
-          # (0.5s window) resets between attempts. Screenshot after each.
-          n=0
-          for pair in "60 120" "100 180" "150 250" "200 300" "250 350" "300 200" "80 400"; do
-            set -- $pair; HOLD=$1; GAP=$2
-            n=$((n+1))
-            killall "System Settings" 2>/dev/null || true   # keep it from covering the notch
-            echo "double-tap sweep #$n: hold=${HOLD}ms gap=${GAP}ms  state='$(app_state)'"
-            swift /tmp/keys.swift double "$HOLD" "$GAP" || true
+          # ---- OPEN the text composer via the control DOUBLE-TAP ---------------
+          # SOLVED: CGEventPost-synthesized flagsChanged events satisfy every
+          # decompiled precondition but never reach the runtime monitor's tap the
+          # way it needs; macOS System Events (osascript) synthesizes the Control
+          # key (key code 59) through Apple's trusted automation path, which the
+          # monitor sees like real hardware. Two quick `key code 59` = the
+          # double-tap that fires textTriggerPressedPublisher -> composer opens
+          # (the app logs reason=textInputActive). Retry until the composer is up.
+          ctrl_double_tap() { osascript -e 'tell application "System Events"' -e 'key code 59' -e "delay $1" -e 'key code 59' -e 'end tell' 2>/dev/null || true; }
+          OPENED=0
+          for d in 0.12 0.15 0.2 0.25; do
+            killall "System Settings" 2>/dev/null || true
+            osascript -e 'tell application "HeyClicky" to activate' 2>/dev/null || true
+            echo "control double-tap (System Events), gap=${d}s  state='$(app_state)'"
+            ctrl_double_tap "$d"
             sleep 2
-            shot "$(printf 'sweep-%02d-h%s-g%s' "$n" "$HOLD" "$GAP")"
-            cliclick c:428,289 || true   # dismiss any macOS dictation prompt
-            sleep 2                        # >0.5s so the tap window resets before next pair
+            shot "$(printf 'textopen-g%s' "$d")"
+            if app_state | grep -q "textInputActive"; then OPENED=1; echo "composer OPEN (textInputActive)"; break; fi
           done
           shot text-01-open
-          # ---- Alternate synthesis path: macOS System Events (osascript) --------
-          # CGEventPost from our process may not reproduce the exact flagsChanged
-          # delivery the runtime monitor's tap needs. System Events synthesizes
-          # keystrokes through Apple's trusted automation path — a different
-          # mechanism. `key code 59` is the Control key; two quick presses = the
-          # double-tap. Try a few gaps.
-          for d in 0.12 0.2 0.3; do
-            killall "System Settings" 2>/dev/null || true
-            echo "sysevents control double-tap, gap=${d}s"
-            osascript -e 'tell application "System Events"' -e 'key code 59' -e "delay $d" -e 'key code 59' -e 'end tell' 2>/dev/null || true
-            sleep 2
-            shot "$(printf 'sysev-g%s' "$d")"
-            cliclick c:428,289 || true; sleep 2
-          done
-          shot sysev-final
-          # Sanity LAST: confirm our synthetic modifier events still reach the
-          # monitor (control+option hold -> listening), so a null sweep result
-          # means "double-tap not recognized", not "events not arriving".
-          swift /tmp/keys.swift hold || true; sleep 1
-          shot diag-01-voicehold
-          cliclick kp:esc || true; sleep 1
-          # Whichever pair opened a field, type the real message and send it.
-          echo "typing the message"
-          cliclick t:"Hey Clicky, what is on my screen right now?" || true
+          echo "composer opened: $OPENED"
+          # ---- TYPE the message into the composer and SEND it ------------------
+          # The composer ("ask HeyClicky…") is focused; type via System Events
+          # keystroke (same trusted path), then press Return to send.
+          MSG="Hey Clicky, what is on my screen right now?"
+          osascript -e "tell application \"System Events\" to keystroke \"$MSG\"" 2>/dev/null || cliclick t:"$MSG" || true
           sleep 2
           shot text-02-typed
-          cliclick kp:return || true
+          osascript -e 'tell application "System Events" to key code 36' 2>/dev/null || cliclick kp:return || true   # Return = send
           echo "state after send: '$(app_state)'"
-          for t in $(seq -w 1 10); do
+          # Capture HeyClicky's reply (frames + state logging). Audio (its spoken
+          # reply) is recorded via BlackHole in av.mkv.
+          for t in $(seq -w 1 12); do
             shot "text-resp-${t}"
             [ $((10#$t % 3)) -eq 0 ] && echo "resp $t state: '$(app_state)'"
             sleep 5
