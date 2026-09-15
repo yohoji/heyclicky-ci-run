@@ -509,6 +509,21 @@ jobs:
             sleep 2                        # >0.5s so the tap window resets before next pair
           done
           shot text-01-open
+          # ---- Alternate synthesis path: macOS System Events (osascript) --------
+          # CGEventPost from our process may not reproduce the exact flagsChanged
+          # delivery the runtime monitor's tap needs. System Events synthesizes
+          # keystrokes through Apple's trusted automation path — a different
+          # mechanism. `key code 59` is the Control key; two quick presses = the
+          # double-tap. Try a few gaps.
+          for d in 0.12 0.2 0.3; do
+            killall "System Settings" 2>/dev/null || true
+            echo "sysevents control double-tap, gap=${d}s"
+            osascript -e 'tell application "System Events"' -e 'key code 59' -e "delay $d" -e 'key code 59' -e 'end tell' 2>/dev/null || true
+            sleep 2
+            shot "$(printf 'sysev-g%s' "$d")"
+            cliclick c:428,289 || true; sleep 2
+          done
+          shot sysev-final
           # Sanity LAST: confirm our synthetic modifier events still reach the
           # monitor (control+option hold -> listening), so a null sweep result
           # means "double-tap not recognized", not "events not arriving".
